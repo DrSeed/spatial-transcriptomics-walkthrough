@@ -1,0 +1,32 @@
+# Large data and results (GitHub rejects files over 100 MB; the code re-downloads or regenerates these)
+data/
+results/*.rds
+*.rds
+*.RDS
+*.zip
+*.incomplete
+*.parquet
+*.h5
+*.tif
+
+# Logs and R session files
+logs/
+.Rhistory
+.RData
+.Rproj.user/
+*_cache/
+*_files/
+
+# Private research notes and side projects (not part of this walkthrough)
+African_ancestry/
+African_reference/
+B1_plan/
+FGT_HIV/
+FGT_spatial/
+novelty_check/
+Deep_Novelty_Check.md
+Novelty_Check.md
+Research_Ideas.md
+
+# macOS
+.DS_Store

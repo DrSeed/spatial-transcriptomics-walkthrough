@@ -1,0 +1,3445 @@
+---
+title: "Spatial Transcriptomics Data Analysis: Annotated Beginner Walkthrough (Classes 1-3)"
+author:
+  - name: "Original course: Flávio Gabriel Carazza-Kessler and Carolina Saibro-Girardi"
+  - name: "English annotated edition: Dr. Seed (@DrSeed)"
+date: "2026-10-17"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+params:
+  run_analysis: true
+---
+
+```{r setup, include=FALSE, purl=FALSE}
+run_analysis <- if (exists("params", inherits = FALSE)) {
+  isTRUE(params$run_analysis)
+} else {
+  # When chunks are run manually, the params object does not exist.
+  # In that case, the analysis is enabled by default.
+  TRUE
+}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = run_analysis,
+  collapse = TRUE,
+  comment = "#>",
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 6,
+  dev = "png",
+  dpi = 120,
+  message = TRUE,
+  warning = FALSE
+)
+```
+
+```{css, echo=FALSE, eval=TRUE}
+.explain {
+  background: #f3f7fb;
+  border: 1px solid #cfdcea;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 10px 0 14px 0;
+  font-size: 0.95em;
+}
+.bigpicture {
+  background: #f4f9f1;
+  border: 1px solid #cfe3c4;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 10px 0 16px 0;
+}
+.explain p:last-child, .bigpicture p:last-child { margin-bottom: 0; }
+```
+
+
+# About this file
+
+This is a single, English-language R Markdown file that strings together every
+vignette of the course **Analysis of Spatial Transcriptomic Data**
+(<https://github.com/flaviogckessler/Curso_ST>), in the order they are taught:
+
+| Part | Class | Topic | Main output |
+|----|----|----|----|
+| 1 | Class 1 | RStudio environment setup | installed packages |
+| 2A | Class 2 | QC, preprocessing, clustering, DE and SVGs (Visium `stxBrain`) | `data/brain.RDS` |
+| 2B | Class 2 | Continuous visualization with RGraphSpace / PathwaySpace | PNG figures |
+| 3A | Class 3 | Cell-type deconvolution with RCTD | `results/stxbrain_Seurat_with_RCTD.rds` |
+| 3B | Class 3 | Cell-cell communication with CellChat + PathwaySpace | `results/spot-spot_commu_anterior.rds` |
+| 3C | Class 3 | Cell segmentation (Xenium) with RGraphSpace + `sf` | PNG figure |
+| Appendix | optional | Rebuild the Xenium crop from the raw 10x data | `data/Xenium_GS_Crop.RDS` |
+
+**Attribution and license.** The original vignettes were written in Portuguese by
+Flávio Gabriel Carazza-Kessler and Carolina Saibro-Girardi, with parts adapted from
+the Sysbiolab Team's RGraphSpace and PathwaySpace vignettes (Mauro A. A. Castro et al.).
+Copyright (c) 2026 Flávio Gabriel Carazza-Kessler and Carolina Saibro-Girardi.
+The course code is released under the MIT License, and the course text under
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
+*Changes in this edition:* the code was translated to English (variable names,
+comments, messages and plot labels). The explanations were rewritten in English
+and shortened. Everything was merged into one file with a single folder layout.
+The output folders are now named `data/`, `images/` and `results/`. The
+optional Xenium raw-data preparation was moved to an appendix.
+
+This **annotated edition** adds a background explanation above every code chunk,
+drawn from the course slides, for readers with no spatial-transcriptomics background.
+The code is identical to the plain walkthrough.
+
+## How to use it
+
+1. Put this `.Rmd` file in an empty project folder, for example `~/Spatial_Course/`.
+2. Open it in RStudio and run
+   **Session > Set Working Directory > To Source File Location**.
+3. Walk through the chunks **in order**, top to bottom, using *Run Current Chunk*.
+   After Part 1 (package installation), **restart R** (*Session > Restart R*),
+   then rerun the *define-directories* chunk and continue from Part 2.
+4. Each part starts by reloading what it needs from disk. So once Part 2A has
+   produced `data/brain.RDS`, you can rerun any later part on its own (after
+   rerunning *define-directories*).
+
+**Resources:** you need R 4.5.0 or newer. The RCTD part needs at least ~20 GB of
+RAM and a ~1 GB download. Part 3C downloads a small, pre-cropped Xenium object.
+The full raw Xenium download (>3 GB) is only used in the optional appendix,
+which is switched off by default.
+
+::: {.explain}
+**What this chunk does.** Sets `project_dir` to the course folder, stops with a clear error if that folder
+doesn't exist, and makes it the working directory with `setwd()`. It also tells
+knitr to use it (`root.dir`) when you knit the whole file. Then it builds three
+sub-folder paths with `file.path()` and creates them with `dir.create()`.
+`recursive = TRUE` creates any missing parent folders, and `showWarnings = FALSE`
+keeps it quiet when a folder already exists.
+
+**Why.** Every later chunk reads and writes files through these four variables. That keeps
+inputs (`data/`), figures (`images/`) and tables/objects (`results/`) apart, so your
+results are easy to find. `file.path()` uses the right separator (`/` or `\`) for
+your operating system, so the same code works on macOS, Linux and Windows.
+
+**What to look for.** Both printed paths should be the same and end in `Documents/Spatial_Course`. The
+path is written directly into the code instead of taken from `getwd()`, because
+`getwd()` reports wherever R happens to be at that moment, which may be an old
+folder. If you move the project, edit only the `project_dir <- ...` line.
+**Rerun this chunk every time you restart R.**
+:::
+
+```{r define-directories}
+# The course folder. Change this one line if you move the project.
+project_dir <- path.expand("~/Documents/Spatial_Course")
+
+if (!dir.exists(project_dir)) {
+  stop("The course folder was not found: ", project_dir)
+}
+
+# Work from the course folder, both when running chunks one by one
+# and when knitting the whole document
+setwd(project_dir)
+knitr::opts_knit$set(root.dir = project_dir)
+
+data_dir <- file.path(project_dir, "data")
+images_dir <- file.path(project_dir, "images")
+results_dir <- file.path(project_dir, "results")
+
+dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(images_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(results_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Both lines should print the same path, ending in Documents/Spatial_Course
+project_dir
+getwd()
+```
+
+# Background for newcomers (Class 1 theory)
+
+This section adds no code. It explains the ideas the rest of the file relies on,
+based on the Class 1 lecture. If you're new to the field, read it first.
+
+## Why spatial transcriptomics?
+
+A tissue is a mix of many cell types arranged in a particular structure. The
+classic way to measure gene expression, **bulk RNA-seq**, grinds the tissue into one
+lysate and gives a single average expression profile. You learn *what* is
+expressed, but not *in which cells* or *where*.
+
+| Method | What it measures | What is lost |
+|----|----|----|
+| **Bulk RNA-seq** | average expression of the whole sample | which cells, and where |
+| **Single-cell RNA-seq** | expression of each individual cell | where each cell was in the tissue (cells are separated first) |
+| **Spatial transcriptomics** | expression at known positions in an intact tissue section | some resolution (Visium) or some genes (image-based panels) |
+
+Spatial transcriptomics adds **context**: which cells are next to which, how gene
+expression follows anatomy, and how a tumor edge differs from its core. That kind
+of structure is often what matters clinically.
+
+## How 10x Visium works (the data in Parts 2–3B)
+
+1. A thin tissue section is placed on a slide whose capture area is covered with
+   thousands of **spots**. Each spot is 55 µm across, and spot centers are 100 µm
+   apart.
+2. Every spot carries millions of DNA probes with a **spatial barcode** (a
+   sequence unique to that spot, so it encodes the spot's XY position) and a **UMI**
+   (a random tag for each molecule).
+3. The tissue is stained and imaged (H&E), then made permeable so mRNA flows onto
+   the probes underneath it.
+4. The captured RNA is sequenced. **Space Ranger** (10x's software) reads the
+   barcodes to assign each read to a spot, collapses PCR duplicates using UMIs,
+   aligns reads to genes, and produces a **gene × spot count matrix** lined up with
+   the image.
+
+Each 55 µm spot usually contains **about 1–10 cells**, so a spot is *not* a cell.
+Visium HD uses 2 µm squares, which is finer than a cell.
+
+## What the data looks like
+
+The core object is a **counts matrix**: rows are genes (thousands), columns are
+barcodes (spots or cells, thousands), and each value is the number of RNA
+molecules. Compared with bulk RNA-seq:
+
+- **Much more data:** thousands of "samples" (spots) instead of a few.
+- **Very sparse:** most entries are 0, because each spot captures only a fraction
+  of its RNA. R stores this as a *sparse matrix* to save memory.
+- **More varied samples:** spots differ in cell number and type.
+
+## The analysis workflow
+
+1. **Reads → counts** (trimming, QC, alignment, counting). For 10x data, Space
+   Ranger does this before you start. This course begins at step 2.
+2. **Preprocessing:** quality control, normalization, dimensionality reduction (Part 2A).
+3. **Finding groups:** clustering (Part 2A).
+4. **Annotating groups:** marker genes, deconvolution (Parts 2A, 3A).
+5. **Downstream analysis:** differential expression, spatially variable genes,
+   cell-cell communication, visualization (Parts 2A, 2B, 3B, 3C).
+
+## Inside a Seurat object (you'll see these words a lot)
+
+| Part | What it holds | Example in this course |
+|----|----|----|
+| **Assay** | one kind of measurement | `Spatial` (raw counts), `SCT` (normalized) |
+| **Layer** | one version of the assay's matrix | `counts` (raw integers), `data` (normalized, log scale), `scale.data` (scaled) |
+| **Metadata** (`object[[]]`) | a table with one row per spot | `nCount_Spatial`, `percent.mt`, `region`, `seurat_clusters` |
+| **Identities** (`Idents`) | the grouping used by default | the clusters |
+| **Reductions** | low-dimensional summaries | `pca`, `umap`, `tsne` |
+| **Images** | the tissue image plus spot coordinates | `anterior1`, `posterior1` |
+
+Useful commands to look inside an object:
+
+- `Assays(obj)` lists the assays.
+- `Layers(obj)` lists the layers.
+- `head(obj[[]])` shows the first rows of the metadata.
+- `Images(obj)` lists the images.
+
+## Glossary
+
+- **Spot / barcode:** one capture location on the Visium slide (one column of the matrix).
+- **Feature:** a gene (one row of the matrix).
+- **UMI:** a molecular tag that lets each original RNA molecule be counted once, despite PCR copies.
+- **Library size / depth (`nCount`):** total UMIs in a spot.
+- **Normalization:** removes technical differences in depth so spots can be compared.
+- **Highly variable genes:** genes that vary most between spots, and carry the most information.
+- **PCA / PC:** combines many correlated genes into a few summary axes.
+- **UMAP / t-SNE:** 2-D maps for visualization only.
+- **KNN / SNN graph:** a network that connects each spot to the spots with the most similar expression.
+- **Louvain / resolution:** the clustering algorithm, and the setting that controls how many clusters it finds.
+- **Marker gene:** a gene specific to one cell type or region.
+- **DEG:** a differentially expressed gene, higher in one predefined group than another.
+- **SVG:** a spatially variable gene, whose expression follows a spatial pattern (no groups needed).
+- **Moran's I:** a statistic measuring whether nearby locations have similar values.
+- **Deconvolution:** estimating which cell types, and in what proportions, make up each spot.
+- **Reference:** an annotated single-cell dataset used for deconvolution.
+- **Ligand / receptor:** a signaling molecule and the protein it binds on the receiving cell.
+- **Segmentation:** drawing cell boundaries so that RNA molecules can be assigned to individual cells.
+- **Raster:** an image stored as a grid of pixels.
+- **lowres / hires:** downsized versions of the tissue image, each with its own coordinate scale.
+- **RDS:** R's file format for saving one object exactly as it is.
+
+## How the boxes in this file work
+
+Above each code chunk there's a box with three parts:
+
+- **What this chunk does:** plain-language steps.
+- **Why:** the scientific or technical reason.
+- **What to look for:** what a correct result looks like.
+
+Boxes titled **Big picture** introduce each part.
+
+# Part 1 (Class 1): Set up the RStudio environment
+
+::: {.bigpicture}
+**Big picture: why so much setup?** An analysis in R uses dozens of add-on
+packages, each written by different people and stored in different places (CRAN,
+Bioconductor, GitHub). Installing everything once at the start, and checking it
+worked, prevents interruptions in the middle of an analysis. The course slides
+also recommend one RStudio **Project** per analysis (*File > New Project > New
+Directory*), which keeps its files separate from your other work. For full
+reproducibility, `renv` can record exact package versions.
+:::
+
+
+The packages come from CRAN, Bioconductor and GitHub. Each loop installs a
+package only if it is missing or older than the required version. That means you can
+rerun these chunks safely. The first install can take a long time, so watch for
+error messages.
+
+## Inspect the R session
+
+::: {.explain}
+**What this chunk does.** `getwd()` prints the working directory, `list.files()` lists what's in it, and
+`.libPaths()` lists the folders where R installs and looks for packages.
+
+**Why.** Most beginner errors are "file not found" (wrong working directory) or "permission
+denied" while installing (the library folder isn't writable). Looking at these three
+things first catches both problems early.
+
+**What to look for.** The first path in `.libPaths()` is where new packages go. It needs to be a folder
+you can write to, which is usually one inside your home directory.
+:::
+
+```{r inspect-session}
+getwd()
+list.files()
+.libPaths()
+```
+
+## CRAN packages
+
+`Seurat` and `SeuratObject` must be version 5 or newer. RGraphSpace and
+PathwaySpace require R >= 4.5.0. `sf` is used in the segmentation part.
+
+::: {.explain}
+**What this chunk does.** First it stops with a clear message if R is older than 4.5.0. Then it goes
+through a list of CRAN packages and installs each one only if it is missing or (for
+Seurat/SeuratObject) older than version 5. `requireNamespace()` checks whether a
+package is installed without loading it, and `dependencies = NA` installs only the
+packages it strictly requires.
+
+**Why.** CRAN is R's main package repository. What each package is for:
+
+- **Seurat / SeuratObject / sctransform**: the main toolkit for single-cell and spatial analysis, its data container, and its normalization method.
+- **dplyr / tibble / tidyr**: work with tables (filter, join, reshape).
+- **ggplot2 / patchwork / gridExtra**: make plots and arrange several plots into one figure.
+- **Matrix**: *sparse* matrices. In a gene × spot matrix most entries are 0, so storing only the non-zero values saves a lot of memory.
+- **RANN**: fast nearest-neighbor search, used to find each spot's neighbors.
+- **future**: parallel computing (lets CellChat use several CPU cores).
+- **sf**: geometry (cell outlines / polygons) for the segmentation part.
+- **ape**: provides the Moran's I calculation that Seurat uses to find spatially variable genes.
+- **knitr / rmarkdown / remotes / BiocManager**: render this document, and install packages from GitHub and Bioconductor.
+
+**What to look for.** Red text on its own isn't a problem. Search the output for lines that start with
+`Error`, and for warnings like *"installation of package ... had non-zero exit
+status"*, which means that package didn't install.
+:::
+
+```{r install-cran-packages}
+if (getRversion() < package_version("4.5.0")) {
+  stop(
+    "This course requires R 4.5.0 or newer because of ",
+    "RGraphSpace and PathwaySpace. Please update R before continuing."
+  )
+}
+
+cran_packages <- c(
+  "Seurat", "SeuratObject", "sctransform", "dplyr", "tibble", "tidyr",
+  "ggplot2", "patchwork", "gridExtra", "RANN", "future", "Matrix", "sf", "ape",
+  "knitr", "rmarkdown", "remotes", "BiocManager"
+)
+
+cran_min_versions <- c(
+  Seurat = "5.0.0",
+  SeuratObject = "5.0.0"
+)
+
+for (pkg in cran_packages) {
+  needs_install <- !requireNamespace(pkg, quietly = TRUE)
+
+  if (
+    pkg %in% names(cran_min_versions) &&
+    !needs_install &&
+    packageVersion(pkg) < package_version(cran_min_versions[[pkg]])
+  ) {
+    needs_install <- TRUE
+  }
+
+  if (needs_install) {
+    install.packages(pkg, dependencies = NA)
+  }
+}
+```
+
+## Bioconductor packages
+
+These are dependencies required by `CellChat`.
+
+::: {.explain}
+**What this chunk does.** Installs three Bioconductor packages, again only if they are missing.
+`ask = FALSE` and `update = FALSE` stop it from asking questions or upgrading every
+package you already have.
+
+**Why.** **Bioconductor** is a separate repository just for bioinformatics packages, with its
+own release schedule, so it has its own installer (`BiocManager`). CellChat needs
+`BiocGenerics` (shared base classes), `BiocNeighbors` (fast neighbor search) and
+`ComplexHeatmap` (its heatmap plots), and CellChat itself needs `Biobase`
+(Bioconductor's basic data classes). Without `Biobase`, CellChat fails with
+*"there is no package called 'Biobase'"*.
+:::
+
+```{r install-bioconductor-packages}
+bioconductor_packages <- c("Biobase", "BiocGenerics", "BiocNeighbors", "ComplexHeatmap")
+
+for (pkg in bioconductor_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    BiocManager::install(
+      pkg,
+      ask = FALSE,
+      update = FALSE)}}
+```
+
+## GitHub packages
+
+- `SeuratData` gives access to Seurat example datasets.
+- `CellChat` infers cell-cell communication.
+- `RGraphSpace` and `PathwaySpace` do the spatial graphs and signal projections.
+- `spacexr` provides RCTD.
+
+`spacexr` must be the GitHub version, which has `create.RCTD()`. The Bioconductor
+version has a different interface.
+
+::: {.explain}
+**What this chunk does.** Installs five packages straight from their developers' GitHub repositories with
+`remotes::install_github()`. It checks minimum versions, and for `spacexr` it also
+checks that the function `create.RCTD()` exists. `upgrade = "never"` leaves your
+other packages alone.
+
+**Why.** These packages are either not on CRAN or the course needs a newer version than CRAN
+has. **SeuratData** downloads example datasets. **CellChat** infers cell-cell
+communication. **RGraphSpace / PathwaySpace** (from the Sysbiolab group in Brazil)
+build spatial graphs and continuous signal maps. **spacexr** contains RCTD for
+deconvolution. The `create.RCTD()` check matters because a Bioconductor version of
+spacexr has a different interface, and the course code would fail with it.
+
+**What to look for.** Installing from GitHub often means compiling C++ code. On macOS you may need the
+Xcode command-line tools (`xcode-select --install`), and on Windows you need
+Rtools. If you hit GitHub's download limit, wait a while or set a GitHub token.
+Two settings in this chunk prevent the failures that came up while testing it:
+`options(repos = BiocManager::repositories())` lets CellChat find its Bioconductor
+dependencies, and a 1-hour timeout lets the large spacexr download finish. Each
+package is wrapped in `tryCatch()`, so if one fails the loop prints `FAILED: ...`
+and moves on instead of stopping. The last line prints `TRUE`/`FALSE` for each
+GitHub package.
+:::
+
+```{r install-github-packages}
+github_repos <- c(
+  SeuratData = "satijalab/seurat-data", CellChat = "jinworks/CellChat",
+  RGraphSpace = "sysbiolab/RGraphSpace", PathwaySpace = "sysbiolab/PathwaySpace",
+  spacexr = "dmcable/spacexr")
+
+github_min_versions <- c(RGraphSpace = "1.5.2", PathwaySpace = "1.5.1", spacexr = "2.2.1")
+
+# Let GitHub packages pull missing dependencies from both CRAN and Bioconductor,
+# and allow up to an hour per download (the spacexr repository is large)
+previous_repos <- options(repos = BiocManager::repositories())
+previous_timeout <- options(timeout = max(3600, getOption("timeout")))
+
+for (pkg in names(github_repos)) {
+  needs_install <- !requireNamespace(pkg, quietly = TRUE)
+
+  if (
+    pkg %in% names(github_min_versions) &&
+    !needs_install &&
+    packageVersion(pkg) < package_version(github_min_versions[[pkg]])
+  ) {needs_install <- TRUE}
+
+  if (
+    pkg == "spacexr" && !needs_install &&
+    !exists(
+      "create.RCTD", envir = asNamespace("spacexr"), inherits = FALSE)){
+    needs_install <- TRUE}
+
+  if (needs_install) {
+    # tryCatch() so one failed package doesn't stop the others from installing
+    tryCatch(
+      remotes::install_github(
+        github_repos[[pkg]],
+        dependencies = NA,
+        build_vignettes = FALSE,
+        upgrade = "never"),
+      error = function(e) message("FAILED: ", pkg, " -- ", conditionMessage(e)))}}
+
+options(previous_repos)
+options(previous_timeout)
+
+# Which GitHub packages are installed now?
+vapply(names(github_repos), requireNamespace, logical(1), quietly = TRUE)
+```
+
+## The `stxBrain` dataset package
+
+The Visium mouse brain dataset (`stxBrain`) is a separate data package. It is
+installed now so the analyses don't have to download it later.
+
+::: {.explain}
+**What this chunk does.** Installs the `stxBrain` dataset (shipped as an R package called
+`stxBrain.SeuratData`). Before downloading it raises R's download time limit to 600 s,
+and `tryCatch(... finally = ...)` puts the original limit back even if the download
+fails.
+
+**Why.** R's default download timeout is 60 seconds, which is too short for a dataset this
+size, so large downloads would otherwise stop partway through. Installing it now
+means the analyses later don't depend on your internet connection.
+:::
+
+```{r install-seurat-data-packages}
+seurat_data_packages <- c(stxBrain.SeuratData = "stxBrain")
+
+for (pkg in names(seurat_data_packages)) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    previous_timeout <- getOption("timeout")
+
+    tryCatch(
+      {
+        options(timeout = max(600, previous_timeout))
+        SeuratData::InstallData(seurat_data_packages[[pkg]])
+      },
+      finally = options(timeout = previous_timeout))}}
+```
+
+## Verify the installation
+
+**Restart R now** (*Session > Restart R*), rerun the *define-directories* chunk,
+and then run the two checks below. Every value should be `TRUE`. If one is
+`FALSE`, rerun the install chunk for that package's source.
+
+::: {.explain}
+**What this chunk does.** Runs `requireNamespace()` for every course package and shows a table with
+`TRUE` (installed) or `FALSE`. `vapply(..., logical(1))` runs the same check on each
+item of the list and guarantees one TRUE/FALSE per package.
+
+**Why.** It's much better to find a missing package now than an hour into an analysis. Run it
+**after restarting R**, because a package installed in the current session may not
+be usable until R restarts.
+
+**What to look for.** Every value should be `TRUE`. For any `FALSE`, rerun the install chunk for where
+that package comes from (CRAN, Bioconductor or GitHub) and read the error message.
+:::
+
+```{r check-installation}
+course_packages <- c(
+  "Seurat", "SeuratObject", "SeuratData", "stxBrain.SeuratData",
+  "sctransform", "dplyr", "tibble", "tidyr", "ggplot2", "patchwork",
+  "gridExtra", "RANN", "future", "Matrix", "sf", "ape", "CellChat", "RGraphSpace",
+  "PathwaySpace", "spacexr", "Biobase", "BiocGenerics", "BiocNeighbors",
+  "ComplexHeatmap", "knitr", "rmarkdown", "remotes", "BiocManager"
+)
+
+package_status <- vapply(
+  course_packages,
+  requireNamespace,
+  logical(1),
+  quietly = TRUE
+)
+
+data.frame(
+  package = course_packages,
+  installed = unname(package_status),
+  row.names = NULL
+)
+```
+
+::: {.explain}
+**What this chunk does.** Compares the installed version of four key packages with the minimum version the
+course needs, and prints a table.
+
+**Why.** Function names and arguments change between versions. For example, Seurat 5 renamed
+"slots" to "layers" (`layer = "counts"`). Old versions give confusing errors, so this
+check rules out version mismatches first.
+
+**What to look for.** `meets_requirement` should be `TRUE` in every row.
+:::
+
+```{r check-versions}
+min_versions <- c(
+  Seurat = "5.0.0", RGraphSpace = "1.5.2", PathwaySpace = "1.5.1", spacexr = "2.2.1")
+
+installed_versions <- vapply(
+  names(min_versions),
+  function(pkg) {
+    if (requireNamespace(pkg, quietly = TRUE)) {
+      as.character(packageVersion(pkg))
+    } else {
+      NA_character_
+    }
+  },
+  character(1)
+)
+
+meets_requirement <- vapply(
+  names(min_versions),
+  function(pkg) {
+    requireNamespace(pkg, quietly = TRUE) &&
+      packageVersion(pkg) >= package_version(min_versions[[pkg]])
+  },
+  logical(1)
+)
+
+data.frame(
+  package = names(min_versions),
+  installed_version = unname(installed_versions),
+  minimum_version = unname(min_versions),
+  meets_requirement = unname(meets_requirement),
+  row.names = NULL)
+```
+
+# Part 2A (Class 2): Quality control, preprocessing and clustering
+
+::: {.bigpicture}
+**Big picture: from raw counts to tissue regions.** These are the standard steps
+for single-cell and spatial data, and this part follows them in order:
+
+counts matrix → **quality control** → **normalization** → feature selection & scaling → **PCA** → **UMAP / t-SNE** → **clustering** → visualization → **differential expression** & **spatially variable genes**
+
+*The dataset.* `stxBrain` is a public 10x Genomics Visium dataset: two sagittal
+sections of an adult mouse brain (anterior and posterior). 10x's Space Ranger
+software has already turned the sequencing reads into a gene × spot count matrix
+and lined it up with an H&E image of the tissue.
+:::
+
+
+Here we load two sagittal sections of the mouse brain (Visium), one anterior and
+one posterior, and merge them. Then we inspect spot QC metrics, normalize with
+`SCTransform()`, reduce dimensions, cluster, and look at marker genes. At the end
+we run a differential-expression test and look for spatially variable genes. The
+processed object is saved to `data/brain.RDS`, and the later parts use it.
+
+## Load the packages
+
+::: {.explain}
+**What this chunk does.** Loads the packages used in this part with `library()` and checks that the
+`stxBrain` dataset is installed.
+
+**Why.** `library()` makes a package's functions available to call by name, so you can write
+`SCTransform()` instead of `sctransform::...`. Checking the dataset first gives you a
+clear error message instead of an obscure one later.
+:::
+
+```{r qc-load-packages, message=FALSE}
+library("Seurat")
+library("SeuratData")
+library("sctransform")
+library("ggplot2")
+library("patchwork")
+
+if (!requireNamespace("stxBrain.SeuratData", quietly = TRUE)) {
+  stop("The stxBrain dataset is not installed. Run Part 1 first.")
+}
+```
+
+## Load and merge the spatial sections
+
+::: {.explain}
+**What this chunk does.** Loads two Visium sections of the mouse brain, `anterior1` (front half) and
+`posterior1` (back half), as two Seurat objects. It then combines them with
+`merge()` and deletes the two separate copies to save memory.
+
+**Why.** Each section is its own Visium capture area and sequencing library. Merging them
+means both are normalized, reduced and clustered **together**, so "cluster 3" means
+the same thing in both sections and you can compare them directly. Nothing has been
+filtered or normalized yet. The object holds the raw counts that Space Ranger (10x's
+pipeline) produced from the sequencing reads, plus the tissue images.
+
+**What to look for.** The printout shows how many **features** (genes, the rows) and **samples** (spots,
+the columns) there are. It also lists the **assay** (`Spatial`, the raw spatial
+counts) and its **layers**: `counts.1` and `counts.2`, one per section.
+:::
+
+```{r qc-load-data}
+brain1 <- SeuratData::LoadData("stxBrain", type = "anterior1")
+brain2 <- SeuratData::LoadData("stxBrain", type = "posterior1")
+
+brain <- merge(brain1, brain2)
+rm(brain1, brain2)
+brain
+```
+
+The `region` column records the anatomical region of each spot. You should see
+2,696 anterior and 3,353 posterior spots, and 31,053 genes.
+
+::: {.explain}
+**What this chunk does.** `table(brain$region)` counts the spots in each anatomical region. `dim(brain)[1]`
+gives the number of rows, which is the number of genes.
+
+**Why.** `brain$region` reads one column of the object's **metadata**, the table with one
+row per spot that stores spot-level information. Checking the numbers confirms the
+data loaded as expected: 2,696 anterior spots, 3,353 posterior spots and 31,053
+genes. Many of these genes are never detected, which is normal.
+:::
+
+```{r qc-regions}
+table(brain$region)
+dim(brain)[1]
+```
+
+## Spot quality control
+
+- `nCount_Spatial`: total transcripts detected in the spot.
+- `nFeature_Spatial`: number of genes detected in the spot.
+- `percent.mt`: percentage of transcripts from mitochondrial genes.
+
+::: {.explain}
+**What this chunk does.** For every spot it calculates what percentage of the counts come from
+mitochondrial genes (gene names starting with `mt-`) and stores the result in the
+metadata as `percent.mt`.
+
+**Why.** When a cell is damaged or dying, the RNA in its cytoplasm leaks out, but
+mitochondrial transcripts stay protected inside the mitochondria. So a high
+mitochondrial fraction is a classic sign of poor-quality cells. The pattern `^mt-`
+means "starts with mt-". Mouse genes use lowercase `mt-` and human genes use `MT-`,
+so you'd change this for human data. **In tissue, this needs care:** very active
+tissues (neurons, muscle, heart) naturally have many mitochondria, so a high value
+isn't automatically bad.
+:::
+
+```{r qc-percent-mito}
+brain[["percent.mt"]] <- Seurat::PercentageFeatureSet(
+  brain,
+  pattern = "^mt-"
+)
+```
+
+To avoid repeating the same plotting code three times, this small helper builds
+the violin plot plus the two tissue maps for one metric and saves the panel.
+
+::: {.explain}
+**What this chunk does.** Defines a small reusable function, `qc_panel()`, that draws one QC metric in two
+ways and saves the figure. The top row is a **violin plot** of the metric's
+distribution for each section. The bottom row maps the metric onto both tissue images
+(`SpatialFeaturePlot`).
+
+**Why.** The same figure is needed for three metrics, and writing a function avoids copying
+the same code three times. In `patchwork`, `/` stacks plots vertically and `|` puts
+them side by side. This is the main difference from single-cell QC: you don't only
+ask *how many* spots have low values, you also see **where** they are in the tissue.
+:::
+
+```{r qc-helper}
+qc_panel <- function(object, feature, title, file_name) {
+  vln <- VlnPlot(object, features = feature, pt.size = 0) + NoLegend()
+  map_anterior <- SpatialFeaturePlot(object, features = feature, images = "anterior1")
+  map_posterior <- SpatialFeaturePlot(object, features = feature, images = "posterior1")
+
+  panel <- vln / (map_anterior | map_posterior) +
+    plot_annotation(title = title)
+
+  ggsave(
+    filename = file.path(images_dir, file_name),
+    plot = panel, width = 11, height = 7, units = "in", dpi = 120, bg = "white"
+  )
+
+  panel
+}
+```
+
+### Number of transcripts
+
+::: {.explain}
+**What this chunk does.** Plots `nCount_Spatial`, the total number of RNA molecules (UMIs) detected in each
+spot. This is also called the *library size* or *sequencing depth*.
+
+**Why.** A **UMI** (unique molecular identifier) is a random tag attached to each RNA molecule
+before amplification, so PCR copies can be collapsed and each original molecule is
+counted once. Spots with very few UMIs captured little RNA. That can be a technical
+problem, or it can be real biology: areas with fewer or smaller cells, such as some
+white-matter tracts, simply contain less RNA.
+
+**What to look for.** On the tissue map the counts are not random. They follow anatomy, with dense,
+cell-rich layers looking brighter. That's why the course **doesn't filter spots
+automatically**: in spatial data, low counts often reflect tissue structure, not
+failure.
+:::
+
+```{r qc-counts, fig.width=11, fig.height=7}
+qc_panel(brain, "nCount_Spatial", "Transcripts per spot", "Brain_SpotQC_counts.png")
+```
+
+### Number of genes
+
+::: {.explain}
+**What this chunk does.** Plots `nFeature_Spatial`, the number of different genes detected (at least 1 count)
+in each spot.
+
+**Why.** It usually tracks the counts closely, since more molecules means more distinct genes.
+A spot with many counts but few genes could mean a handful of genes (for example
+mitochondrial or hemoglobin genes) dominate it.
+:::
+
+```{r qc-genes, fig.width=11, fig.height=7}
+qc_panel(brain, "nFeature_Spatial", "Genes detected per spot", "Brain_SpotQC_genes.png")
+```
+
+### Mitochondrial percentage
+
+::: {.explain}
+**What this chunk does.** Plots `percent.mt` for each spot.
+
+**Why.** Look for **patches** of high values on the tissue. A whole region with high
+mitochondrial reads may be biology (energy-hungry neurons) or tissue damage (edges,
+tears, folds). Isolated spots with extreme values are more likely to be technical
+problems.
+:::
+
+```{r qc-mito, fig.width=11, fig.height=7}
+qc_panel(brain, "percent.mt", "Mitochondrial percentage per spot", "Brain_SpotQC_mito.png")
+```
+
+### Optional filtering
+
+In this teaching dataset, the metrics are only inspected and no spots are
+removed. The chunk below is **optional**. It shows how a filter would work, keeping
+spots with > 200 genes, > 500 counts and > 5% mitochondrial reads. It removes
+11 anterior and 298 posterior spots. The rest of the course keeps using the
+unfiltered `brain`.
+
+::: {.explain}
+**What this chunk does.** Shows how to remove spots with `subset()` using conditions on the metadata. It
+prints the spot and gene counts before and after, then deletes `brain_filt`, so the
+rest of the course uses the **unfiltered** object.
+
+**Why.** In single-cell RNA-seq you almost always remove low-quality cells. In spatial data,
+removing spots leaves holes in the tissue, and low-quality spots are often biology
+(see the counts chunk), so the course only demonstrates the syntax here.
+**Note on the thresholds:** the usual rule is to keep cells with a mitochondrial
+percentage *below* a cutoff (for example `percent.mt < 20`). The example keeps
+`percent.mt > 5` only to show how conditions are combined with `&`. Don't copy those
+thresholds into a real analysis.
+
+**What to look for.** In the course run it removes 11 anterior and 298 posterior spots (6,049 → 5,740).
+:::
+
+```{r qc-optional-filter, message=FALSE}
+brain_filt <- subset(brain, subset = nFeature_Spatial > 200 &
+                       nCount_Spatial > 500 &
+                       percent.mt > 5)
+print("BEFORE FILTERING")
+print(paste("Number of spots:", dim(brain)[2]))
+print(paste("Number of genes:", dim(brain)[1]))
+table(brain$region)
+
+print("AFTER FILTERING")
+print(paste("Number of spots:", dim(brain_filt)[2]))
+print(paste("Number of genes:", dim(brain_filt)[1]))
+table(brain_filt$region)
+
+rm(brain_filt)
+```
+
+## Preprocessing and clustering
+
+`SCTransform()` normalizes and stabilizes the variance. PCA is then used for UMAP,
+t-SNE, the neighbor graph and the clusters. This is the slowest step of Part 2A,
+mostly because of `SCTransform()`. The elapsed times are printed.
+
+::: {.explain}
+**What this chunk does.** The core preprocessing pipeline, timed with `Sys.time()`:
+
+1. **`SCTransform()`** normalizes the counts. It creates a new assay called `SCT` and picks ~3,000 highly variable genes.
+2. **`RunPCA()`** summarizes those genes into 50 principal components (PCs).
+3. **`RunUMAP()` / `RunTSNE()`** make 2-D maps from the first 10 PCs, for plotting.
+4. **`FindNeighbors()`** builds a graph that connects each spot to the spots with the most similar expression.
+5. **`FindClusters()`** cuts that graph into groups (clusters) of similar spots.
+
+**Why.** **Normalization.** Two spots can differ in total counts just because one captured
+RNA more efficiently, and that technical difference has to be removed before spots
+can be compared. Simple `LogNormalize` divides each spot by its total and takes a log.
+**SCTransform** fits a statistical model (a regularized negative binomial regression)
+for each gene, with sequencing depth as the explanatory variable, and keeps what the
+model can't explain (Pearson residuals). That handles sparse, low-depth data better.
+`return.only.var.genes = FALSE` keeps normalized values for *all* genes, so you can
+plot any gene later. It uses more memory.
+
+**Dimensionality reduction.** Each spot is described by ~31,000 numbers, and many
+genes move together. PCA combines genes that vary together into a few "summary axes".
+PC1 captures the most variation, PC2 the next most, and so on. Using only the top PCs
+(`dims = 1:10`) keeps the main biological signal and throws away a lot of noise. To
+check how many PCs are worth keeping, run `ElbowPlot(brain)` and look for where the
+curve flattens.
+
+**UMAP / t-SNE** squeeze those 10 dimensions into 2 so you can look at them. Spots
+that sit close together on the map have similar expression. **Only nearby distances
+mean much:** the gap between two far-apart clusters is not a reliable measure.
+
+**Clustering.** `FindNeighbors()` builds a k-nearest-neighbor graph in PC space and
+weights each edge by how many neighbors two spots share (a "shared nearest neighbor"
+graph). `FindClusters()` then uses the **Louvain** algorithm to find tightly
+connected communities. The `resolution` argument (default 0.8) sets how fine the
+clusters are: higher values give more, smaller clusters.
+
+`set.seed()` fixes the random number generator so that UMAP, t-SNE and clustering
+give the same result every time you run them.
+
+**What to look for.** This is the slowest chunk in Part 2. The two printed time differences tell you how
+long it took. `brain` now has an `SCT` assay, `pca`/`umap`/`tsne` reductions, and a
+`seurat_clusters` column in its metadata.
+:::
+
+```{r qc-preprocess-cluster}
+set.seed(20260906)
+
+start_time <- Sys.time()
+
+brain <- SCTransform(
+  brain,
+  assay = "Spatial",
+  do.scale = TRUE,
+  return.only.var.genes = FALSE,
+  verbose = FALSE
+)
+
+Sys.time() - start_time
+
+start_time <- Sys.time()
+
+brain <- RunPCA(brain, verbose = FALSE)
+brain <- RunUMAP(brain, dims = 1:10)
+brain <- RunTSNE(brain, dims = 1:10)
+brain <- FindNeighbors(brain, dims = 1:10)
+brain <- FindClusters(brain, verbose = FALSE)
+
+Sys.time() - start_time
+```
+
+Save the processed object. Parts 2B and 3B load it.
+
+::: {.explain}
+**What this chunk does.** Saves the whole processed Seurat object to `data/brain.RDS`.
+
+**Why.** `saveRDS()` writes any R object to disk exactly as it is in memory. Parts 2B and 3B
+start by reading this file with `readRDS()`, so you never have to rerun
+SCTransform. It's a checkpoint.
+:::
+
+```{r qc-save-brain}
+saveRDS(brain, file = file.path(data_dir, "brain.RDS"))
+```
+
+## Visualize the clusters
+
+### UMAP and t-SNE
+
+::: {.explain}
+**What this chunk does.** Draws the UMAP and t-SNE maps side by side, with each spot colored by its cluster,
+and saves the figure.
+
+**Why.** This is the first look at whether the clusters are distinct. Clusters that form
+separate islands are clearly different. Clusters that blend into each other may be
+gradual transitions, or a sign the resolution is too high. On both maps, **each dot
+is a spot, not a cell.**
+:::
+
+```{r qc-reductions, fig.width=11, fig.height=5}
+umap_brain <- DimPlot(brain, reduction = "umap") + labs(title = "UMAP")
+tsne_brain <- DimPlot(brain, reduction = "tsne") + labs(title = "t-SNE")
+
+reductions_panel <- umap_brain | tsne_brain
+reductions_panel
+
+ggsave(
+  filename = file.path(images_dir, "Brain_clustering_reductions.png"),
+  plot = reductions_panel, width = 11, height = 5, units = "in", dpi = 120, bg = "white"
+)
+```
+
+### Spatial distribution
+
+::: {.explain}
+**What this chunk does.** Colors every spot on the two tissue images by its cluster.
+
+**Why.** **This is a key moment in spatial analysis.** The clusters were computed from gene
+expression alone, and the algorithm never saw the coordinates. Even so, they come out
+as coherent anatomical regions: cortical layers, hippocampus, striatum, white matter,
+olfactory bulb, cerebellum. That confirms the clustering reflects real biology. In
+Visium, each 55 µm spot holds roughly 1–10 cells, so a cluster is better described as
+a *tissue region / niche* than a cell type.
+:::
+
+```{r qc-clusters-on-tissue, fig.width=11, fig.height=5}
+cluster_map <- SpatialDimPlot(brain) +
+  plot_annotation(title = "Spatial distribution of clusters")
+
+cluster_map
+
+ggsave(
+  filename = file.path(images_dir, "Brain_clustering_spatial.png"),
+  plot = cluster_map, width = 11, height = 5, units = "in", dpi = 120, bg = "white"
+)
+```
+
+### Cluster composition of each section
+
+::: {.explain}
+**What this chunk does.** Counts spots per cluster in each section with `table()`, then draws two bar
+charts: absolute numbers, and proportions (`position = "fill"` scales each bar to
+100%).
+
+**Why.** It shows whether a cluster is shared by both sections or belongs to only one. A
+cluster found only in the posterior section most likely represents a structure only
+that section contains, such as the cerebellum. If you had replicate samples, a
+cluster found in just one sample could also point to a batch effect.
+:::
+
+```{r qc-cluster-composition, fig.width=10, fig.height=5}
+cluster_distribution <- as.data.frame(
+  table(brain$seurat_clusters, brain$orig.ident)
+)
+colnames(cluster_distribution) <- c("Cluster", "Section", "Spots")
+
+p_spot_count <- ggplot(
+  cluster_distribution,
+  aes(x = Section, y = Spots, fill = Cluster)
+) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Section", y = "Number of spots")
+
+p_spot_proportion <- ggplot(
+  cluster_distribution,
+  aes(x = Section, y = Spots, fill = Cluster)
+) +
+  geom_col(position = "fill") +
+  coord_flip() +
+  labs(x = "Section", y = "Proportion of spots")
+
+composition_panel <- p_spot_count | p_spot_proportion
+composition_panel
+
+ggsave(
+  filename = file.path(images_dir, "Brain_clustering_composition.png"),
+  plot = composition_panel, width = 10, height = 5, units = "in", dpi = 120, bg = "white"
+)
+```
+
+## Representative marker genes
+
+These genes highlight neuronal and non-neuronal populations. They help relate the
+clusters to anatomy, but they are not a full cell-type annotation.
+
+::: {.explain}
+**What this chunk does.** Maps the expression of seven known marker genes onto the tissue.
+
+**Why.** A **marker gene** is strongly and specifically expressed by one cell type, so its
+expression shows where that cell type is:
+
+- **Hpca** (hippocalcin) and **Nrgn** (neurogranin): neurons. Expect strong hippocampus and cortex.
+- **Plp1** (proteolipid protein 1): oligodendrocytes, the cells that make myelin. Expect white-matter tracts.
+- **Aif1** (Iba1): microglia, the brain's immune cells. Expect a scattered, weak signal.
+- **Gfap**: astrocytes. Highest near the brain surface and ventricles.
+- **Ttr** (transthyretin): choroid plexus, which makes cerebrospinal fluid. Expect small bright spots in the ventricles.
+- **Mgp**: fibroblasts / meninges. Expect the outer edge of the brain.
+
+Comparing these maps with the cluster map lets you start naming clusters (for
+example "the cluster that lights up for Plp1 is white matter"). It's a sanity check,
+not a full annotation. Part 3A does annotation properly.
+:::
+
+```{r qc-marker-genes, fig.width=12, fig.height=18}
+genes <- c(
+  "Hpca", "Nrgn", # neurons
+  "Plp1",         # oligodendrocytes
+  "Aif1",         # microglia
+  "Gfap",         # astrocytes
+  "Ttr",          # choroid plexus cells
+  "Mgp"           # fibroblasts
+)
+
+marker_genes_panel <- SpatialFeaturePlot(brain, features = genes, ncol = 2)
+marker_genes_panel
+
+ggsave(
+  filename = file.path(images_dir, "Brain_Genes.png"),
+  plot = marker_genes_panel, width = 12, height = 18, units = "in", dpi = 120,
+  bg = "white", limitsize = FALSE
+)
+```
+
+## Differential expression in spatial RNA-seq
+
+`FindMarkers()` compares two groups defined in the metadata. The groups can be
+clusters, cell types, or any other annotation. Here we compare clusters 1 and 10,
+using only the anterior region.
+
+::: {.explain}
+**What this chunk does.** Keeps only the anterior spots (`brain_ant`) and highlights where clusters 1 and 10
+are on the tissue.
+
+**Why.** **Differential expression (DE)** asks which genes are higher in group A than in
+group B. Using one section makes it faster, and plotting the two groups first shows
+you *what* you're comparing. `facet.highlight = TRUE` draws each cluster in its own
+panel.
+:::
+
+```{r de-selected-clusters, fig.width=6, fig.height=4}
+# Subset the anterior region
+brain_ant <- subset(brain, subset = region == "anterior")
+
+# Highlight clusters 1 and 10, which are compared below
+SpatialDimPlot(brain_ant,
+               cells.highlight = CellsByIdentities(object = brain, idents = c(1, 10)),
+               facet.highlight = TRUE, ncol = 2)
+```
+
+::: {.explain}
+**What this chunk does.** `PrepSCTFindMarkers()` gets the SCT data ready for comparison, and `FindMarkers()`
+then tests every gene for a difference between cluster 1 (`ident.1`) and cluster 10
+(`ident.2`).
+
+**Why.** Because the two sections were merged, SCTransform fitted a separate model for each.
+`PrepSCTFindMarkers()` rescales the corrected counts to a common sequencing depth so
+values from the two models are comparable. Without this step Seurat stops with an
+error. By default, `FindMarkers()` uses a **Wilcoxon rank-sum test** and only tests
+genes detected in a minimum fraction of spots.
+
+**A caveat for beginners:** spots from one tissue section are not independent
+replicates, because neighboring spots share cells and biology. So the p-values are
+overly optimistic. Use this list to *rank* candidate genes, not as proof of a
+case-vs-control difference. That needs several biological samples per condition.
+
+**What to look for.** See the column descriptions below the chunk. **Positive `avg_log2FC` = higher in
+cluster 1. Negative = higher in cluster 10.** A log2FC of 1 means twice as high.
+:::
+
+```{r de-find-markers}
+# Prepare the SCT models for differential expression
+brain_ant <- PrepSCTFindMarkers(brain_ant, assay = "SCT")
+
+# Find markers between the selected clusters
+de_markers <- FindMarkers(
+  brain_ant,
+  ident.1 = "1",
+  ident.2 = "10",
+  assay = "SCT"
+)
+
+de_markers
+```
+
+Columns of `de_markers`:
+
+- `p_val`: p-value.
+- `avg_log2FC`: log2 fold change of the mean expression. A positive value means
+  the gene is higher in the first group (cluster 1), and a negative value means it
+  is higher in the second group (cluster 10).
+- `pct.1` / `pct.2`: fraction of spots in each group where the gene is detected.
+- `p_val_adj`: Bonferroni-adjusted p-value, corrected over all genes.
+
+For more detail, see the Seurat vignette
+[Differential expression testing](https://satijalab.org/seurat/articles/de_vignette).
+
+::: {.explain}
+**What this chunk does.** Takes the first three genes in `de_markers` (the most significant ones) and maps
+them onto the anterior section.
+
+**Why.** A statistical result is easier to trust when you can see it. If a gene is
+genuinely different between the clusters, its map should be bright in one highlighted
+region and dim in the other. `alpha = c(0.1, 1)` makes low-expression spots
+transparent so the high ones stand out.
+
+**What to look for.** The table is sorted by p-value, not by direction. Check the sign of `avg_log2FC`
+for each of the three genes to see which cluster it belongs to.
+:::
+
+```{r de-plot-markers, fig.width=6, fig.height=3}
+de_plot <- SpatialFeaturePlot(object = brain_ant,
+                              features = rownames(de_markers)[1:3],
+                              alpha = c(0.1, 1), ncol = 3)
+de_plot
+
+ggsave(
+  filename = file.path(images_dir, "FindMarkers.png"),
+  plot = de_plot, width = 6, height = 3, units = "in", dpi = 120,
+  bg = "white", limitsize = FALSE
+)
+```
+
+## Spatially variable genes (SVGs)
+
+An SVG is a gene whose expression pattern depends on location instead of being
+randomly scattered over the XY coordinates. `FindSpatiallyVariableFeatures()` with
+**Moran's I** measures spatial autocorrelation, that is, how similar a gene's
+expression is between nearby spots. To keep the run fast, only 100 variable genes
+are tested. Raising this number makes the step slower.
+
+::: {.explain}
+**What this chunk does.** Runs `FindSpatiallyVariableFeatures()` with **Moran's I** on the first 100 variable
+genes of the anterior section.
+
+**Why.** A **spatially variable gene (SVG)** is one whose expression forms a spatial pattern
+(gradients, layers, patches) instead of being scattered randomly. Moran's I comes from
+geography. For each gene it asks whether nearby spots have more similar values than
+you'd expect by chance:
+
+- **I ≈ +1**: similar values cluster together (strong pattern).
+- **I ≈ 0**: random.
+- **I < 0**: alternating, checkerboard-like.
+
+Unlike DE, **you don't define any groups**. The question is purely about space.
+Testing all genes is slow, so the course tests 100. Increase the number if you have
+time.
+
+If you get *"'RunMoransI' requires either Rfast2 or ape to be installed"*, run
+`install.packages("ape")` and rerun this chunk. `Rfast2` is a faster alternative,
+but it has to be compiled and is harder to install on a Mac.
+:::
+
+```{r svg-morans-i}
+brain_ant_I <- FindSpatiallyVariableFeatures(brain_ant,
+                                             features = VariableFeatures(brain)[1:100],
+                                             selection.method = "moransi")
+```
+
+::: {.explain}
+**What this chunk does.** Takes the 6 genes with the highest Moran's I and maps them on both sections.
+`&` applies the same theme (small margins) to every panel.
+
+**Why.** It shows what "spatially variable" looks like. You should see clear layers or
+regions, not speckle. The test only used the anterior spots, but plotting both
+sections shows whether the pattern carries over to the posterior section.
+:::
+
+```{r svg-plot, fig.width=12, fig.height=12}
+# Six top-ranked SVGs
+top.features <- head(SpatiallyVariableFeatures(brain_ant_I, method = "moransi"), 6)
+
+# The test used only the anterior region, but both regions can be plotted
+svg_plot <- SpatialFeaturePlot(brain,
+                               features = top.features, ncol = 2, alpha = c(0.1, 1)) &
+  theme(plot.margin = unit(c(1, 1, 1, 1), "mm"))
+
+svg_plot
+
+ggsave(
+  filename = file.path(images_dir, "SVGs.png"),
+  plot = svg_plot, width = 10, height = 12, units = "in", dpi = 120,
+  bg = "white", limitsize = FALSE
+)
+```
+
+SVG detection is not a case-versus-control comparison, so "differentially
+expressed" and "fold change" do not apply here. It describes how a gene's
+expression is laid out in space. Other SVG methods include SpatialDE, nnSVG,
+SPARK-X and MERINGUE.
+
+::: {.explain}
+**What this chunk does.** Deletes every object except the folder paths, then runs `gc()` to give memory back.
+
+**Why.** R keeps every object in RAM. The next parts load large objects, and RCTD alone needs
+~20 GB, so starting each part with a clean workspace prevents out-of-memory crashes.
+Nothing is lost, because the results are already saved on disk.
+:::
+
+```{r qc-cleanup}
+# Free memory before the next part
+rm(list = setdiff(ls(), c("project_dir", "data_dir", "images_dir", "results_dir",
+                          "run_analysis", "params")))
+invisible(gc())
+```
+
+# Part 2B (Class 2): Continuous visualization with PathwaySpace
+
+::: {.bigpicture}
+**Big picture: filling the gaps.** Visium measures 55 µm spots placed 100 µm apart
+from center to center, so most of the tissue lies *between* spots and is never
+measured. Standard plots show separate dots. **RGraphSpace** treats the spots as
+the nodes of a graph and connects them to `ggplot2`. **PathwaySpace** spreads each
+spot's value into the space around it, fading with distance, and turns the dots
+into a continuous map that is easier to compare with the histology. The filled-in
+values are an estimate, a smoothing of what was measured, not new measurements.
+:::
+
+
+We visualize the gene `Camk2n1` in the anterior section in three ways. First,
+directly on the spots with Seurat. Second, as a spot graph with **RGraphSpace**.
+Third, as a continuous signal with **PathwaySpace**, which fills in the space
+between spots. This follows the PathwaySpace vignette
+[Visualizing spatial transcriptomics](https://sysbiolab.github.io/PathwaySpace/articles/spatial-transcriptomics.html).
+
+## Load the packages and the object
+
+::: {.explain}
+**What this chunk does.** Loads Seurat, ggplot2, RGraphSpace, PathwaySpace and patchwork.
+
+**Why.** RGraphSpace and PathwaySpace work through `ggplot2`, so every plot in this part is
+a ggplot that you can customize with the usual `+ labs()`, `+ theme()` and so on.
+:::
+
+```{r ps-load-packages, message=FALSE}
+library("Seurat")
+library("SeuratObject")
+library("ggplot2")
+library("RGraphSpace")
+library("PathwaySpace")
+library("patchwork")
+```
+
+::: {.explain}
+**What this chunk does.** Reads the processed object saved in Part 2A and plots the clusters with their
+numbers on the tissue (`label = TRUE`).
+
+**Why.** It confirms the checkpoint loaded correctly: same clusters, same tissue.
+:::
+
+```{r ps-load-brain}
+brain <- readRDS(file.path(data_dir, "brain.RDS"))
+
+SpatialDimPlot(brain, label = TRUE, label.size = 3)
+```
+
+## Keep only the anterior region
+
+::: {.explain}
+**What this chunk does.** Keeps only the anterior section.
+
+**Why.** PathwaySpace projects the signal onto one image at a time. Using a single section
+also keeps the computation light.
+:::
+
+```{r ps-select-anterior}
+brain <- subset(brain, subset = region == "anterior")
+
+SpatialDimPlot(brain, label = TRUE, label.size = 3)
+```
+
+## The gene of interest in Seurat
+
+::: {.explain}
+**What this chunk does.** Draws the standard Seurat map of **Camk2n1** and stores it as `g_s` for the
+comparison at the end.
+
+**Why.** *Camk2n1* (an inhibitor of CaMKII) is highly expressed in neurons of the cortex and
+hippocampus, so it gives a clear pattern to compare methods with. Notice that the
+Seurat map is made of **separate dots with gaps between them**: Visium spots are 55 µm
+wide but 100 µm apart from center to center, so a lot of tissue is never measured.
+:::
+
+```{r ps-gene-seurat, fig.width=7, fig.height=5}
+gene <- "Camk2n1"
+
+g_s <- SpatialFeaturePlot(brain,
+  features = gene, ncol = 3, alpha = c(0.1, 1)) +
+  labs(title = "Seurat")
+
+g_s
+```
+
+## Build the graph space with RGraphSpace
+
+RGraphSpace, developed by Sysbiolab in Brazil, plots spatial data on top of the
+tissue image using `ggplot2`. It also creates the `GraphSpace` object that
+PathwaySpace uses.
+
+### Get the coordinates, image and expression
+
+We use the low-resolution coordinates, because they line up with the tissue
+image. The `data` layer holds the VST-normalized expression.
+
+::: {.explain}
+**What this chunk does.** Takes out the three ingredients of a spatial plot: the spot coordinates, the tissue
+image as a raster (a grid of pixels), and the normalized expression matrix
+(`layer = "data"` of the SCT assay).
+
+**Why.** Visium stores the tissue image at several resolutions: full-resolution, `hires`
+(~2,000 px) and `lowres` (~600 px). It also stores scale factors to convert between
+them. **The coordinates must match the image they're drawn on**, which is why
+`scale = "lowres"` is used here together with the low-resolution image. Doing this
+by hand shows you what a "spatial object" is made of.
+
+**What to look for.** You can check the pieces yourself with `plot(spot_coord[, 1:2])` and
+`plot(raster_image)`, as the class slides do. The dot plot has the same shape as the
+tissue, but it may be upside down, because image rows are counted from the top while
+plot y-axes go up from the bottom.
+:::
+
+```{r ps-get-components}
+# Spot coordinates
+spot_coord <- GetTissueCoordinates(brain, scale = "lowres")
+
+# Histology image as a raster
+raster_image <- GetImage(brain, "raster")
+
+# VST-normalized gene expression
+vst_gexp <- GetAssayData(brain, layer = "data")
+```
+
+### Build a `GraphSpace` by hand
+
+This chunk is for teaching only. Each spot becomes a vertex, and then the image and
+the expression matrix are attached to the object.
+
+::: {.explain}
+**What this chunk does.** Builds a `GraphSpace` object by hand. Each spot becomes a **node** (vertex) placed
+at its coordinates. Then the image (`gs_image<-`) and the expression matrix
+(`gs_fdata<-`) are attached to it.
+
+**Why.** A **graph** is a set of nodes connected by edges. Treating spots as nodes is what
+later lets PathwaySpace spread a signal from each spot into the space around it, and
+lets Part 3B connect neighboring spots with edges. This chunk is for learning only;
+the next chunk is the recommended shortcut.
+:::
+
+```{r ps-build-graphspace-manual}
+spot_coord$nodeSize <- 1
+
+# Build the GraphSpace object
+gs <- GraphSpace(spot_coord)
+# Attach the raster image
+gs_image(gs) <- raster_image
+# Attach the expression matrix
+gs_fdata(gs) <- vst_gexp
+
+gs
+```
+
+### Recommended: convert straight from Seurat, then normalize
+
+`as.GraphSpace()` converts the Seurat object and carries over all of its
+attributes, so this is the recommended route. `normalizeGraphSpace()` then puts
+the spot coordinates and the image into the same normalized, pixel-aligned
+coordinate system.
+
+::: {.explain}
+**What this chunk does.** Converts the Seurat object straight into a `GraphSpace` with `as.GraphSpace()`,
+attaches the image, then runs `normalizeGraphSpace()`.
+
+**Why.** `as.GraphSpace()` carries over **everything**: coordinates, metadata (clusters, QC
+values) and expression. `normalizeGraphSpace()` rescales the coordinates to the
+range 0–1 and lines them up with the image's pixel grid, which RGraphSpace calls the
+"normalized coordinate system". After this, any spot and any pixel share the same
+coordinate system.
+:::
+
+```{r ps-coerce-graphspace}
+# Convert the Seurat object
+gs <- as.GraphSpace(brain, space = "spatial", scale = "lowres")
+# Attach the raster image (same as raster_image above)
+gs_image(gs) <- SeuratObject::GetImage(brain, mode = "raster")
+gs
+
+# Normalization step
+gs <- normalizeGraphSpace(gs)
+```
+
+### Check that the spots sit on the image
+
+If another dataset comes out flipped vertically, use `normalizeGraphSpace(gs, flip.y = TRUE)`.
+
+::: {.explain}
+**What this chunk does.** Draws the nodes on top of the tissue image.
+
+**Why.** It's a quick check that the coordinates and the image line up. If the dots looked
+upside down compared with the tissue, you'd fix it with
+`normalizeGraphSpace(gs, flip.y = TRUE)`. With this dataset they should line up
+without any change.
+:::
+
+```{r ps-overlay-check, fig.width=7, fig.height=5}
+xy_labs <- labs(x = "Spot coordinate 1", y = "Spot coordinate 2")
+
+plotGraphSpace(gs, add.image = TRUE) +
+  xy_labs
+```
+
+### Plot the gene with RGraphSpace
+
+::: {.explain}
+**What this chunk does.** Builds an RGraphSpace plot: `annotation_gspace_image()` adds the tissue image as
+the background, `geom_nodespace()` draws the spots colored by Camk2n1, and
+`theme_gspace_coords()` formats the axes. The figure is saved.
+
+**Why.** It's the same information as the Seurat map, written as ordinary `ggplot2` code,
+so you have full control over size, colors and layers. Gene names can be used
+directly inside `aes()` because the expression matrix is attached to the object.
+:::
+
+```{r ps-plot-graphspace}
+cpal <- hcl.colors(100, palette = "Spectral", rev = TRUE)
+
+g <- ggplot(gs) +
+  annotation_gspace_image(gs) +
+  geom_nodespace(mapping = aes(colour = Camk2n1), size = 1.2, pch = 19) +
+  # Change the spot size to improve the visualization
+  scale_colour_continuous(palette = cpal) +
+  theme_gspace_coords(theme = "th3", is_norm = TRUE,
+    xlab = "Tissue coordinates 1", ylab = "Tissue coordinates 2") +
+  labs(title = "RGraphSpace")
+g
+
+ggsave(filename = file.path(images_dir, "Brain_ant_RGraphSpace_Camk2n1.png"),
+  plot = g, width = 5, height = 5, units = "in", dpi = 120, bg = "white")
+```
+
+## Build the PathwaySpace
+
+PathwaySpace, also from Sysbiolab, projects the signal from each spot into the
+surrounding space, which gives a continuous picture of expression across the tissue.
+
+### Distance between spots
+
+`pdist` is the mean distance from each spot to its nearest neighbor, measured in
+the normalized coordinates. For Visium v1/v2 it corresponds to about 100 µm, the
+distance between spot centers. The decay function uses it as its reference scale.
+
+::: {.explain}
+**What this chunk does.** Turns the GraphSpace into a PathwaySpace object. Then it measures, for every spot,
+the distance to its nearest neighboring spot, and averages those distances to get
+`pdist`.
+
+**Why.** `pdist` is the typical spacing between spots in normalized units. On Visium it
+corresponds to about 100 µm. The projection uses it as a ruler, so that "how far
+should a spot's signal spread?" is answered in spot spacings rather than arbitrary
+units.
+:::
+
+```{r ps-build-pathwayspace}
+pspace_obj <- buildPathwaySpace(gs)
+
+nspot <- getNearestNode(pspace_obj)
+
+pdist <- mean(nspot$dist)
+pdist
+```
+
+### Map the tissue silhouette
+
+The silhouette marks the area the signal is projected onto. `baseline` controls
+how far that area extends around the graph.
+
+::: {.explain}
+**What this chunk does.** Draws an outline (silhouette) around the spots that marks the tissue area, and
+plots it over the image.
+
+**Why.** The projection should only fill in the gaps *inside* the tissue, not spread into
+the empty glass around it. The silhouette is that boundary. `baseline = 0.1`
+controls how far it extends beyond the outermost spots.
+:::
+
+```{r ps-silhouette, fig.width=7, fig.height=5}
+pspace_obj <- silhouetteMapping(pspace_obj, baseline = 0.1)
+
+plotPathwaySpace(ps = pspace_obj,
+  theme = "th3", add.image = TRUE, si.alpha = 0.5) +
+  xy_labs
+```
+
+### Project the gene signal
+
+Circular projection spreads each spot's value outward. Each spot's contribution
+shrinks with distance (Weibull decay), and the contributions are combined by a
+weighted mean. See the
+[PathwaySpace get-started vignette](https://sysbiolab.github.io/PathwaySpace/articles/get-started.html)
+for details on the decay and aggregation functions.
+
+::: {.explain}
+**What this chunk does.** Chooses Camk2n1 as the signal (`activeFeature`) and runs `circularProjection()`.
+Every point of a fine grid gets a value calculated from the spots around it.
+
+**Why.** Think of each spot as a lamp whose brightness is its expression. The light fades
+with distance according to a **decay function**: `weibullDecay(decay = 0.5,
+pdist = pdist)` means a spot's influence falls to about half at a distance of one
+spot spacing. Each grid point then combines the contributions it receives with an
+**aggregation function**, here a weighted mean (`"wmean"`), so nearer spots count
+more. `k = gs_vcount(...)` lets every spot contribute. The result is a smooth,
+continuous map that fills in the unmeasured gaps. Keep in mind those gaps are
+*estimated*, not measured.
+:::
+
+```{r ps-project-signal}
+# Name of the gene to plot
+activeFeature(pspace_obj) <- "Camk2n1"
+
+pspace_obj <- circularProjection(pspace_obj,
+  k = gs_vcount(pspace_obj),
+  decay.fun = weibullDecay(decay = 0.5, pdist = pdist),
+  aggregate.fun = signalAggregation("wmean"))
+```
+
+## Visualize the projection
+
+::: {.explain}
+**What this chunk does.** Draws two panels: the bare tissue image, and the same image with the projected
+signal on top (50% transparent).
+
+**Why.** Comparing them side by side makes it easy to link signal hot spots to the anatomy
+you can see in the histology.
+:::
+
+```{r ps-separate-panels, fig.width=11, fig.height=5}
+# Background histology only
+p1 <- ggplot(pspace_obj) +
+  annotation_gspace_image(pspace_obj) +
+  xy_labs
+
+# Gene signal over the background image
+p2 <- ggplot(pspace_obj) +
+  annotation_gspace_image(pspace_obj) +
+  annotation_pspace_signal(pspace_obj, si.alpha = 0.5) +
+  xy_labs
+
+p1 + p2
+```
+
+Setting `zlim = c(0.5, 1)` truncates the scale so that only the strongest areas
+of the signal are shown.
+
+::: {.explain}
+**What this chunk does.** Redraws the projection showing only values between 0.5 and 1 (`zlim`), and saves
+it.
+
+**Why.** Cutting off the low values hides the background and highlights where the gene is
+*most* expressed. That's useful for marking region boundaries in a figure.
+:::
+
+```{r ps-truncated-scale, fig.width=7, fig.height=5}
+p <- ggplot(pspace_obj) +
+  annotation_gspace_image(pspace_obj) +
+  annotation_pspace_signal(pspace_obj, si.alpha = 0.25, zlim = c(0.5, 1)) +
+  xy_labs + labs(title = "PathwaySpace")
+
+p
+
+ggsave(filename = file.path(images_dir, "Brain_ant_PathwaySpace_Camk2n1.png"),
+  plot = p, width = 7, height = 5, units = "in", dpi = 120, bg = "white")
+```
+
+## Compare Seurat, RGraphSpace and PathwaySpace
+
+::: {.explain}
+**What this chunk does.** Places the Seurat, RGraphSpace and PathwaySpace views next to each other and saves
+the panel.
+
+**Why.** It's the take-home figure of Class 2: the same data shown three ways. They are
+discrete spots (Seurat), customizable graph nodes (RGraphSpace), and a continuous
+surface (PathwaySpace).
+:::
+
+```{r ps-compare-and-save, fig.width=12, fig.height=5}
+g_s + g + p
+
+ggsave(filename = file.path(images_dir, "Brain_anterior_Camk2n1.png"),
+  plot = g_s + g + p,
+  width = 12, height = 6, units = "in", dpi = 120, bg = "white")
+```
+
+::: {.explain}
+**What this chunk does.** Deletes every object except the folder paths, then runs `gc()` to give memory back.
+
+**Why.** R keeps every object in RAM. The next parts load large objects, and RCTD alone needs
+~20 GB, so starting each part with a clean workspace prevents out-of-memory crashes.
+Nothing is lost, because the results are already saved on disk.
+:::
+
+```{r ps-cleanup}
+rm(list = setdiff(ls(), c("project_dir", "data_dir", "images_dir", "results_dir",
+                          "run_analysis", "params")))
+invisible(gc())
+```
+
+# Part 3A (Class 3): Cell-type deconvolution with RCTD
+
+::: {.bigpicture}
+**Big picture: what's inside a spot?** A Visium v1/v2 spot (55 µm) holds roughly
+1–10 cells, so its RNA is a **mix**. *Deconvolution* (or *decomposition*) estimates
+that mix. It needs a **single-cell reference** that shows what each pure cell type
+looks like, then works out which combination of those profiles best explains each
+spot. **RCTD** (Cable et al., 2022) does this with a statistical count model and
+corrects for differences between the single-cell and Visium technologies. Another
+popular tool is cell2location. Visium HD (2 µm bins) and image-based platforms such
+as Xenium get closer to single cells, but then they need *segmentation* (Part 3C).
+:::
+
+
+A Visium spot (55 µm) usually captures RNA from several cells. **RCTD** (Robust
+Cell Type Decomposition) learns cell-type expression profiles from an annotated
+single-cell reference, corrects for platform differences, and estimates which cell
+types make up each spot.
+
+| Component | Object | What it provides |
+|----|----|----|
+| Spatial sample | `stxBrain`, section `anterior1` (from `SeuratData`) | raw gene-by-spot counts and spot coordinates |
+| Single-cell reference | Allen Institute mouse cortex (Tasic et al., 2016) | raw gene-by-cell counts and one cell-type label per cell |
+| Result | `RCTD` object | classification and weights for up to two cell types per spot |
+
+**RCTD needs raw integer counts.** That is why `stxBrain` is reloaded from
+`SeuratData` here instead of reusing the SCT-normalized `brain.RDS`.
+
+`spacexr` has three modes: `doublet` (at most 2 types per spot), `multi` (up to
+`MAX_MULTI_TYPES`) and `full` (no fixed limit). We use `doublet` because it is
+the lightest. It is a modeling simplification and does not claim that a spot holds
+only two cells.
+
+**Compute:** you need at least ~20 GB of RAM. For reference, `run.RCTD()` took
+about 14 minutes on a server with 30 cores and 160 GB of RAM. Parallel cores
+(`max_cores` > 1) only work on Linux and macOS. On Windows, keep `max_cores = 1`,
+which is much slower.
+
+## Load the packages
+
+::: {.explain}
+**What this chunk does.** Checks that the RCTD packages are installed, loads them, and prints the Seurat and
+spacexr versions.
+
+**Why.** The course code was tested with Seurat 5.5.1 and the GitHub version of spacexr
+2.2.1. Confirming the versions avoids interface mismatches.
+:::
+
+```{r rctd-check-load-packages, message=FALSE}
+rctd_packages <- c("Seurat", "SeuratObject", "SeuratData", "Matrix", "ggplot2", "spacexr")
+
+missing_rctd_packages <- rctd_packages[
+  !vapply(rctd_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_rctd_packages) > 0) {
+  stop("Run Part 1 first. Missing packages: ",
+       paste(missing_rctd_packages, collapse = ", "))
+}
+
+library("Seurat")
+library("SeuratData")
+library("Matrix")
+library("ggplot2")
+library("spacexr")
+
+options(stringsAsFactors = FALSE)
+
+# Expected: Seurat 5.5.1 and spacexr 2.2.1 or newer
+packageVersion("Seurat")
+packageVersion("spacexr")
+```
+
+## Load `stxBrain` (anterior section) with raw counts
+
+::: {.explain}
+**What this chunk does.** Loads a fresh copy of the anterior section straight from SeuratData.
+
+**Why.** **RCTD models raw integer counts.** Its statistical model assumes each value is a
+count of molecules. The `brain.RDS` object holds SCT-normalized values (decimals and
+residuals), which would break that assumption, so we start again from the original
+data.
+:::
+
+```{r rctd-load-stxbrain, message=FALSE}
+stxbrain <- SeuratData::LoadData("stxBrain", type = "anterior1")
+stxbrain
+```
+
+RCTD receives only the `counts` layer of the `Spatial` assay. The `data`,
+`scale.data` and `SCT` layers must not be used as input.
+
+::: {.explain}
+**What this chunk does.** Extracts the raw count matrix (genes × spots), prints its size, shows a 5 × 5
+corner of it, and summarizes the total counts per spot.
+
+**Why.** The 5 × 5 corner shows dots (`.`), which is how a sparse matrix prints zeros, along
+with a few whole numbers. That is what raw counts should look like. The summary gives
+the range of sequencing depth across spots. RCTD includes each spot's total in its
+model, because a spot with twice the RNA should have roughly twice the counts for the
+same cell mixture.
+
+**What to look for.** 2,696 spots × 31,053 genes, and whole numbers only.
+:::
+
+```{r rctd-extract-spatial-counts}
+spatial_counts <- SeuratObject::LayerData(
+  object = stxbrain,
+  assay = "Spatial",
+  layer = "counts"
+)
+
+print(paste("Number of spots:", dim(spatial_counts)[2]))
+print(paste("Number of genes:", dim(spatial_counts)[1]))
+
+spatial_counts[
+  seq_len(min(5L, nrow(spatial_counts))),
+  seq_len(min(5L, ncol(spatial_counts))),
+  drop = FALSE]
+
+# Sequencing depth per spot
+summary(Matrix::colSums(spatial_counts))
+```
+
+Extract the unscaled spot coordinates and match their order to the columns of the
+count matrix.
+
+::: {.explain}
+**What this chunk does.** Gets the x/y position of each spot (full-resolution pixels, `scale = NULL`) and
+reorders the rows so they match the columns of the count matrix.
+
+**Why.** spacexr needs coordinates to build its spatial object and to plot results. RCTD
+analyzes each spot **independently**, though; its model doesn't use the neighboring
+spots. The reordering step is important: everything is matched by position, so if
+row 5 of the coordinates isn't the same spot as column 5 of the counts, results
+end up on the wrong spots.
+:::
+
+```{r rctd-extract-coordinates}
+image_name <- SeuratObject::Images(stxbrain)[1]
+spatial_coords <- SeuratObject::GetTissueCoordinates(
+  object = stxbrain,
+  image = image_name,
+  scale = NULL
+)
+
+spatial_coords <- as.data.frame(spatial_coords[, c("x", "y"), drop = FALSE])
+spatial_coords <- spatial_coords[colnames(spatial_counts), , drop = FALSE]
+
+head(spatial_coords)
+```
+
+## Prepare the Allen Institute cortex reference
+
+### Download the reference (once)
+
+This is a **~1 GB** download, saved as `data/allen_cortex.rds`. It is skipped if
+the file already exists.
+
+::: {.explain}
+**What this chunk does.** Downloads the Allen Institute mouse cortex single-cell reference (~1 GB) to
+`data/allen_cortex.rds`, but only if it isn't already there.
+
+**Why.** **Deconvolution needs a reference.** Each Visium spot is a mix of 1–10 cells. To
+work out *which* cell types are in the mix, RCTD needs to know what each pure cell
+type looks like. That information comes from a single-cell RNA-seq dataset where
+every cell already has a cell-type label (Tasic et al., 2016). `mode = "wb"` writes
+the file in binary mode, which prevents a corrupted file on Windows.
+
+Large downloads sometimes stop partway through, because of a slow connection,
+Wi-Fi dropping, or the laptop going to sleep. A cut-off file still *looks* present,
+but `readRDS()` then fails with *"error reading from connection"*. So this chunk
+compares the file's size with the full size on the server (1,038 MB). It sets an
+incomplete file aside (renamed `.incomplete`), downloads into a `.part` file, and
+gives it the real name only once it's complete. Keep the laptop awake and plugged
+in while it runs.
+:::
+
+```{r rctd-download-reference}
+reference_file <- file.path(data_dir, "allen_cortex.rds")
+reference_url <- paste0(
+  "https://www.dropbox.com/scl/fi/sgmfzk72cdoc945ap19c9/",
+  "allen_cortex.rds?rlkey=qfou47stxczo14m37vmea54wl&dl=1"
+)
+# Size of the complete file on the server (bytes)
+expected_bytes <- 1038315197
+
+# An incomplete file from an interrupted download can't be read, so set it aside
+if (file.exists(reference_file) && file.size(reference_file) != expected_bytes) {
+  message("The existing reference file is incomplete (",
+          round(file.size(reference_file) / 1e6), " MB of ",
+          round(expected_bytes / 1e6), " MB). Downloading it again.")
+  file.rename(reference_file, paste0(reference_file, ".incomplete"))
+}
+
+if (!file.exists(reference_file)) {
+  previous_timeout <- getOption("timeout")
+  options(timeout = max(3600, previous_timeout))
+
+  # Download to a temporary ".part" file, and only give it its final name
+  # once the whole file has arrived
+  partial_file <- paste0(reference_file, ".part")
+  download.file(url = reference_url, destfile = partial_file, mode = "wb")
+
+  options(timeout = previous_timeout)
+
+  if (file.size(partial_file) != expected_bytes) {
+    stop("The download stopped early (", round(file.size(partial_file) / 1e6),
+         " MB of ", round(expected_bytes / 1e6), " MB). Rerun this chunk to try again.")
+  }
+  file.rename(partial_file, reference_file)
+}
+
+round(file.size(reference_file) / 1e6)  # should print 1038 (MB)
+```
+
+### Extract the counts and labels
+
+Loading the reference uses about **3 GB** of RAM. The cell-type labels are in the
+`subclass` column.
+
+::: {.explain}
+**What this chunk does.** Reads the reference (~3 GB in memory), takes out its cell metadata and its raw count
+matrix, and puts the metadata rows in the same order as the matrix columns.
+
+**Why.** RCTD needs two things from the reference: raw counts per cell, and one label per
+cell. As with the spatial data, everything is matched by position, so the order has
+to agree.
+:::
+
+```{r rctd-prepare-reference}
+if (!file.exists(reference_file)) {
+  stop("The single-cell reference was not found at: ", reference_file)
+}
+
+# Load the reference
+allen_reference <- readRDS(reference_file)
+
+# Cell metadata of the reference
+reference_metadata <- allen_reference[[]]
+
+# Counts of the reference
+reference_counts <- SeuratObject::LayerData(
+  object = allen_reference,
+  assay = "RNA",
+  layer = "counts"
+)
+head(reference_counts[, 1:5])
+
+# Put the metadata in the same order as the count matrix
+reference_metadata <- reference_metadata[
+  colnames(reference_counts), , drop = FALSE
+]
+
+head(reference_metadata)
+```
+
+RCTD's default filter requires at least 25 cells per cell type. Here the rare
+types are dropped explicitly, so you can see which ones are removed.
+
+::: {.explain}
+**What this chunk does.** Takes the cell-type label from the `subclass` column, replaces `/` with `-`
+(for example `L2/3 IT` becomes `L2-3 IT`), drops cells without a label, keeps only
+cell types with at least 25 cells, and removes all other cells.
+
+**Why.** A `/` in a name causes problems in file paths and in some spacexr steps. RCTD needs
+enough cells per type (at least 25 by default) to estimate a reliable average
+profile. Dropping rare types yourself shows you exactly which ones are left out,
+instead of RCTD removing them silently. Cortex subclass names describe the neuron
+layer and type (for example `L4`, `L5 PT`, `Pvalb`, `Sst`) or the glial class
+(`Astro`, `Oligo`, `Micro`...).
+
+**What to look for.** About 14,242 reference cells remain, and the list of cell-type names is printed.
+:::
+
+```{r rctd-prepare-reference-labels}
+# Cell-type column from the metadata
+reference_cell_types <- as.character(reference_metadata$subclass)
+# Clean up cell-type names
+reference_cell_types <- gsub("/", "-", reference_cell_types, fixed = TRUE)
+
+valid_cells <- !is.na(reference_cell_types) & nzchar(reference_cell_types)
+
+type_sizes <- table(reference_cell_types[valid_cells])
+
+# Keep cell types present in at least 25 cells
+eligible_types <- names(type_sizes[type_sizes >= 25])
+valid_cells <- valid_cells & reference_cell_types %in% eligible_types
+
+# Remove cells of rare types from the reference counts
+reference_counts <- reference_counts[, valid_cells, drop = FALSE]
+reference_cell_types <- droplevels(factor(reference_cell_types[valid_cells]))
+
+print(paste("Number of reference cells:", ncol(reference_counts)))
+print("Reference cell types:")
+levels(reference_cell_types)
+```
+
+### Keep the shared genes
+
+The spatial data have 31,053 genes and the reference has 34,617. They share
+about 19,293 genes, matched by mouse gene symbol.
+
+::: {.explain}
+**What this chunk does.** Finds the genes measured in both datasets, shows a summary table, stops if there are
+fewer than 1,000, and trims both matrices to those genes.
+
+**Why.** RCTD compares each spot with the reference profiles gene by gene, so only genes
+present in both datasets can be used. Here about 19,293 genes are shared. A very small
+overlap usually means a mistake, such as human versus mouse gene names or Ensembl IDs
+versus gene symbols.
+:::
+
+```{r rctd-shared-genes}
+shared_genes <- intersect(rownames(spatial_counts), rownames(reference_counts))
+
+data.frame(
+  source = c("spatial sample", "single-cell reference", "intersection"),
+  n_genes = c(nrow(spatial_counts), nrow(reference_counts), length(shared_genes))
+)
+
+if (length(shared_genes) < 1000L) {
+  stop(
+    "Fewer than 1,000 shared genes were found. Check the organism, ",
+    "the gene identifiers, and that both matrices hold raw counts."
+  )
+}
+
+spatial_counts <- spatial_counts[shared_genes, , drop = FALSE]
+reference_counts <- reference_counts[shared_genes, , drop = FALSE]
+
+# Remove heavy objects from the workspace (free RAM)
+rm(allen_reference)
+invisible(gc())
+```
+
+## Build the `spacexr` input objects
+
+The reference goes into a `Reference` object and the spatial sample into a
+`SpatialRNA` object. In both, the column sums are the total UMIs per cell or spot.
+
+::: {.explain}
+**What this chunk does.** Wraps the reference in a `Reference` object (counts + labels + total UMIs per cell)
+and the spatial data in a `SpatialRNA` object (coordinates + counts + total UMIs per
+spot), then frees memory.
+
+**Why.** These are the two input classes spacexr expects. The printed table is a final check
+that both have the same genes.
+:::
+
+```{r rctd-build-inputs}
+names(reference_cell_types) <- colnames(reference_counts)
+
+# spacexr object for the reference
+rctd_reference <- spacexr::Reference(
+  reference_counts,
+  reference_cell_types,
+  Matrix::colSums(reference_counts)
+)
+
+# spacexr object for the spatial data
+rctd_query <- spacexr::SpatialRNA(
+  as.data.frame(spatial_coords),
+  spatial_counts,
+  Matrix::colSums(spatial_counts)
+)
+
+data.frame(object = c("rctd_reference", "rctd_query"),
+  genes = c(nrow(rctd_reference@counts), nrow(rctd_query@counts)),
+  units = c(ncol(rctd_reference@counts), ncol(rctd_query@counts)),
+  unit_type = c("cells", "spots"))
+
+# Remove heavy objects from the workspace (free RAM)
+rm(spatial_counts, reference_counts, spatial_coords,
+   reference_metadata, reference_cell_types, shared_genes)
+invisible(gc())
+```
+
+## Run RCTD
+
+`create.RCTD()` prepares the data, picks informative genes and learns the
+reference profiles. `n_cores` is set to `1` so your computer isn't overloaded.
+On Linux or macOS you can raise it to a safe number for your CPU. On Windows it
+must stay at `1`.
+
+::: {.explain}
+**What this chunk does.** `create.RCTD()` prepares the analysis. It selects informative genes (genes that
+differ between cell types in the reference), calculates the average profile of each
+cell type, and drops spots with too few UMIs.
+
+**Why.** This is the "learning" step. `max_cores` is the number of CPU cores to use. On
+macOS/Linux you can raise it to speed things up; a safe choice is the number of
+cores minus 1 (see `parallel::detectCores()`). On Windows it must stay at 1.
+:::
+
+```{r rctd-create}
+set.seed(20260904)
+
+n_cores <- 1
+
+RCTD <- spacexr::create.RCTD(
+  rctd_query,
+  rctd_reference,
+  max_cores = n_cores
+)
+
+rm(rctd_query, rctd_reference)
+invisible(gc())
+```
+
+**Caution:** this is the slowest step of the whole course.
+
+::: {.explain}
+**What this chunk does.** `run.RCTD()` fits the model to every spot in `doublet` mode and saves the result.
+
+**Why.** For each spot, RCTD looks for the one or two cell types whose profiles, mixed in some
+proportion, best explain that spot's counts. It also corrects for a **platform
+effect**: some genes are captured more or less efficiently by single-cell sequencing
+than by Visium. `doublet` mode limits each spot to two cell types to keep the model
+simple. **This is the slowest step of the whole course.**
+
+**What to look for.** The printed time difference shows how long it took. The full result is saved to
+`results/stxbrain_RCTD_doublet_results.rds`, so you don't have to run it again.
+:::
+
+```{r rctd-run, message=FALSE}
+rctd_start <- Sys.time()
+
+RCTD <- spacexr::run.RCTD(RCTD, doublet_mode = "doublet")
+
+Sys.time() - rctd_start
+
+saveRDS(RCTD, file = file.path(results_dir, "stxbrain_RCTD_doublet_results.rds"))
+```
+
+## Inspect the RCTD results
+
+In `doublet` mode:
+
+- `results_df` holds each spot's class and its assigned cell types.
+- `weights_doublet` holds the weights of the first and second types.
+
+::: {.explain}
+**What this chunk does.** Takes the per-spot results (`results_df`) and the two cell-type weights
+(`weights_doublet`), joins them into one table, and counts spots per class.
+
+**Why.** `first_type` is the main cell type and `second_type` the second one. The weights are
+the estimated share of each, and they add up to about 1. The class tells you how
+much to trust them (see the list below the chunk).
+:::
+
+```{r rctd-inspect-weights}
+spot_results <- RCTD@results$results_df
+doublet_weights <- as.data.frame(RCTD@results$weights_doublet)
+colnames(doublet_weights) <- c("first_type_weight", "second_type_weight")
+
+rctd_spot_summary <- cbind(spot_results, doublet_weights)
+
+head(rctd_spot_summary)
+table(rctd_spot_summary$spot_class)
+```
+
+Spot classes:
+
+- `singlet`: one cell type was assigned with confidence.
+- `doublet_certain`: two cell types were assigned with confidence.
+- `doublet_uncertain`: only the first type is reliable.
+- `reject`: no reliable assignment.
+
+## Add the annotations to the Seurat object
+
+Seurat uses the barcodes in the row names to place each result on the right spot.
+
+::: {.explain}
+**What this chunk does.** Adds the RCTD columns to the Seurat object's metadata.
+
+**Why.** `AddMetaData()` matches rows by spot barcode (the row names), so each result goes to
+the right spot. Once they are in the metadata, every Seurat plotting function can
+color spots by RCTD results, for example `group.by = "first_type"`.
+:::
+
+```{r rctd-annotate-seurat}
+stxbrain <- SeuratObject::AddMetaData(object = stxbrain, metadata = rctd_spot_summary)
+
+rm(RCTD, spot_results, doublet_weights)
+invisible(gc())
+```
+
+## Visualize the results on the tissue
+
+::: {.explain}
+**What this chunk does.** Colors each spot by its RCTD class (singlet / doublet_certain / doublet_uncertain /
+reject) and saves the figure.
+
+**Why.** Look for spatial patterns in reliability. Many `reject` spots in a region (for
+example the striatum or olfactory bulb) suggest the **reference has no matching
+cell type**. The Allen reference only contains cortex cells, so cells from other brain
+regions don't fit any of its profiles.
+:::
+
+```{r rctd-plot-classes}
+p_classes <- Seurat::SpatialDimPlot(
+  object = stxbrain,
+  images = image_name,
+  group.by = "spot_class",
+  pt.size.factor = 1.6,
+  crop = TRUE
+) +
+  labs(title = "RCTD spot classification")
+
+p_classes
+
+ggplot2::ggsave(
+  filename = file.path(images_dir, "rctd_spot_classification.png"),
+  plot = p_classes, width = 7, height = 5, units = "in", dpi = 120, bg = "white"
+)
+```
+
+Read the second type together with `spot_class`. It is only reliable for
+`doublet_certain` spots.
+
+::: {.explain}
+**What this chunk does.** Maps the first and second assigned cell type side by side and saves each map and
+the combined figure.
+
+**Why.** This is the payoff of deconvolution: cell types placed in the tissue. In the cortex
+you should see layer-specific neurons (`L2-3 IT`, `L4`, `L5`, `L6`...) in bands
+parallel to the surface, and `Oligo` along the white matter. That kind of anatomical
+order is the best evidence that the assignments are sensible.
+:::
+
+```{r rctd-plot-types, fig.width=12, fig.height=6}
+p1 <- Seurat::SpatialDimPlot(
+  object = stxbrain, images = image_name, group.by = "first_type",
+  pt.size.factor = 1.6, crop = TRUE
+) +
+  labs(title = "First cell type")
+
+p2 <- Seurat::SpatialDimPlot(
+  object = stxbrain, images = image_name, group.by = "second_type",
+  pt.size.factor = 1.6, crop = TRUE
+) +
+  labs(title = "Second cell type")
+
+p_types <- p1 + p2
+p_types
+
+ggplot2::ggsave(filename = file.path(images_dir, "rctd_first_cell_type.png"),
+  plot = p1, width = 7, height = 5, units = "in", dpi = 120, bg = "white")
+ggplot2::ggsave(filename = file.path(images_dir, "rctd_second_cell_type.png"),
+  plot = p2, width = 7, height = 5, units = "in", dpi = 120, bg = "white")
+ggplot2::ggsave(filename = file.path(images_dir, "rctd_cell_types_combined.png"),
+  plot = p_types, width = 10, height = 5, units = "in", dpi = 120, bg = "white")
+```
+
+## Save reusable results
+
+::: {.explain}
+**What this chunk does.** Saves the per-spot table as CSV and the annotated Seurat object as RDS.
+
+**Why.** The CSV opens in Excel or any other tool. The RDS is the input for the course
+challenge (redoing CellChat with cell types instead of clusters).
+:::
+
+```{r rctd-save-results}
+write.csv(
+  rctd_spot_summary,
+  file = file.path(results_dir, "stxbrain_RCTD_doublet_spot_summary.csv"),
+  row.names = TRUE
+)
+
+saveRDS(stxbrain, file = file.path(results_dir, "stxbrain_Seurat_with_RCTD.rds"))
+```
+
+- `stxbrain_RCTD_doublet_results.rds`: the full RCTD object.
+- `stxbrain_RCTD_doublet_spot_summary.csv`: per-spot class, first and second
+  types, and their weights.
+- `stxbrain_Seurat_with_RCTD.rds`: the Seurat object with the RCTD results in its
+  metadata. You need it for the course challenge at the end of Part 3B.
+
+## Interpretation checklist
+
+1. **What is the spot class?** Don't treat `reject` spots as reliable assignments.
+2. **Is the second type reliable?** For `doublet_uncertain`, only trust the first type.
+3. **Is the reference appropriate?** The Allen reference is cortex-focused, and RCTD
+   cannot find cell types that are missing from the reference.
+4. **Are the predictions spatially plausible?** Cortical and white-matter
+   populations should form coherent anatomical patterns, not random dots.
+
+RCTD weights are model estimates. They are not cell counts.
+
+::: {.explain}
+**What this chunk does.** Deletes every object except the folder paths, then runs `gc()` to give memory back.
+
+**Why.** R keeps every object in RAM. The next parts load large objects, and RCTD alone needs
+~20 GB, so starting each part with a clean workspace prevents out-of-memory crashes.
+Nothing is lost, because the results are already saved on disk.
+:::
+
+```{r rctd-cleanup}
+rm(list = setdiff(ls(), c("project_dir", "data_dir", "images_dir", "results_dir",
+                          "run_analysis", "params")))
+invisible(gc())
+```
+
+# Part 3B (Class 3): Cell-cell communication with CellChat and PathwaySpace
+
+::: {.bigpicture}
+**Big picture: are neighboring regions signaling to each other?** Cells
+communicate when a **ligand** made by one cell binds a **receptor** on another.
+From RNA alone, tools like **CellChat** (Jin et al., 2021; 2025) *infer* likely
+communication: if group A expresses a ligand and group B expresses its receptor,
+they might be communicating. **The spatial advantage:** in ordinary single-cell
+data you don't know which cells were neighbors, so CellChat would consider every
+pair of groups. Here it can ignore groups too far apart for a signal to reach.
+**Limitations:** this is a prediction from mRNA. It doesn't measure proteins,
+secretion or binding, so treat the results as hypotheses to test.
+:::
+
+
+This part combines two tools:
+
+1. **CellChat** estimates ligand-receptor interactions between the Seurat
+   clusters (Jin et al., 2021; 2025).
+2. **RGraphSpace/PathwaySpace** maps these interactions onto neighboring spots
+   and projects the signal onto the tissue.
+
+We use `data/brain.RDS` from Part 2A and keep only the anterior region.
+
+> **How to interpret the result:** CellChat works at the group (cluster) level.
+> The spot-to-spot table *projects* those cluster-level results onto pairs of
+> nearby spots whose clusters match the source and target. It is not an
+> independent CellChat inference for each pair of spots.
+
+## Load the packages
+
+::: {.explain}
+**What this chunk does.** Checks and loads CellChat, RGraphSpace, PathwaySpace, Seurat and the table and
+plotting packages.
+
+**Why.** CellChat does the inference, dplyr/tidyr reshape its tables, and RGraphSpace /
+PathwaySpace show the results on the tissue.
+:::
+
+```{r cc-check-load-packages, message=FALSE}
+cellchat_packages <- c(
+  "CellChat", "RGraphSpace", "PathwaySpace", "Seurat", "SeuratObject",
+  "dplyr", "tibble", "tidyr", "ggplot2", "RANN", "future"
+)
+
+missing_packages <- cellchat_packages[
+  !vapply(cellchat_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop("Run Part 1 first. Missing packages: ",
+       paste(missing_packages, collapse = ", "))
+}
+
+library("CellChat")
+library("RGraphSpace")
+library("PathwaySpace")
+library("Seurat")
+library("SeuratObject")
+library("dplyr")
+library("tibble")
+library("tidyr")
+library("ggplot2")
+
+options(stringsAsFactors = FALSE)
+
+packageVersion("Seurat")
+```
+
+## Load the object and keep the anterior region
+
+`subset()` drops the posterior spots and their image, leaving only `anterior1`.
+
+::: {.explain}
+**What this chunk does.** Loads `brain.RDS`, keeps the anterior section, makes SCT the default assay, sets the
+Seurat clusters as the active grouping (identities), and stops unless exactly one
+image is left.
+
+**Why.** CellChat needs **normalized** expression, which is why it uses SCT (unlike RCTD). It
+also needs **groups** to compare; here those are the clusters. One section means one
+coordinate system.
+:::
+
+```{r cc-load-brain}
+brain <- readRDS(file.path(data_dir, "brain.RDS"))
+brain <- subset(brain, subset = region == "anterior")
+
+DefaultAssay(brain) <- "SCT"
+Idents(brain) <- "seurat_clusters"
+
+if (length(Images(brain)) != 1L) {
+  stop("The anterior subset must keep exactly one spatial image.")
+}
+
+image_name <- Images(brain)[1]
+
+brain
+table(brain$region)
+```
+
+You should get 2,696 spots and one image, named `anterior1`.
+
+## Prepare the CellChat inputs
+
+For spatial data, CellChat needs four inputs:
+
+- `data.input`: normalized gene-by-spot matrix.
+- `meta`: cluster and sample labels.
+- `spatial.locs`: full-resolution spatial coordinates.
+- `spatial.factors`: the pixel-to-micrometer conversion.
+
+::: {.explain}
+**What this chunk does.** Builds two inputs: `data.input`, the normalized gene × spot matrix, and `meta`, a
+table with one row per spot giving its group (`labels`) and sample (`samples`).
+
+**Why.** The cluster names get a `cluster_` prefix because names like "0" or "1" can be
+mistaken for row numbers, and CellChat doesn't accept group names that are bare
+numbers. The table printed at the end shows how many spots each group has, and very
+small groups are filtered out later.
+:::
+
+```{r cc-prepare-expression-metadata}
+data.input <- LayerData(brain, assay = "SCT", layer = "data")
+anterior_spots <- Cells(brain[[image_name]])
+data.input <- data.input[, anterior_spots, drop = FALSE]
+
+brain_metadata <- brain[[]]
+
+meta <- data.frame(
+  labels = paste0("cluster_",
+    brain_metadata[colnames(data.input), "seurat_clusters"]),
+  samples = image_name,
+  row.names = colnames(data.input)
+)
+
+meta$labels <- factor(meta$labels)
+meta$samples <- factor(meta$samples, levels = image_name)
+
+table(meta$labels, meta$samples)
+```
+
+On Visium, adjacent spot centers are 100 µm apart, and a spot is 55 µm across.
+We use those two numbers to convert pixels to micrometers.
+
+::: {.explain}
+**What this chunk does.** Gets the full-resolution pixel coordinates of each spot and works out how many
+micrometers one pixel is. The shortest distance between any two spots (adjacent
+spots) is known to be 100 µm, so `ratio = 100 / that distance`. `tol = 27.5` (half
+the 55 µm spot) is the allowed error when comparing distances.
+
+**Why.** Biology is measured in micrometers, not pixels. A secreted molecule may only travel
+a short distance (tens of µm), so CellChat has to convert image pixels into real
+distances before it can decide which groups are close enough to communicate.
+:::
+
+```{r cc-prepare-coordinates}
+spatial.locs <- GetTissueCoordinates(brain, image = image_name, scale = NULL)
+spatial.locs <- as.data.frame(spatial.locs[, c("x", "y"), drop = FALSE])
+spatial.locs <- spatial.locs[colnames(data.input), , drop = FALSE]
+
+spot.size <- 55
+center_distance <- 100
+distances <- computeCellDistance(coordinates = spatial.locs)
+min_distance <- min(distances[distances > 0])
+
+spatial.factors <- data.frame(
+  ratio = center_distance / min_distance,
+  tol = spot.size / 2,
+  row.names = image_name
+)
+
+spatial.factors
+head(spatial.locs)
+```
+
+::: {.explain}
+**What this chunk does.** Creates the CellChat object with `datatype = "spatial"`, combining expression,
+groups, coordinates and the µm conversion.
+
+**Why.** The `spatial` mode is what makes CellChat take distance into account. In ordinary
+single-cell data you don't know which cells were neighbors, so any two cell types
+could in principle "talk". With spatial data you can rule out groups that are too far
+apart.
+:::
+
+```{r cc-create-cellchat}
+cellchat <- createCellChat(
+  object = data.input, meta = meta, group.by = "labels",
+  datatype = "spatial", coordinates = spatial.locs,
+  spatial.factors = spatial.factors
+)
+
+cellchat
+```
+
+## Choose the ligand-receptor database
+
+`stxBrain` is mouse data, so we use `CellChatDB.mouse`. To keep the run time short,
+we restrict it to **Secreted Signaling**.
+
+::: {.explain}
+**What this chunk does.** Loads CellChat's curated mouse ligand-receptor database, plots its categories, and
+keeps only **Secreted Signaling**.
+
+**Why.** Cell-cell communication works mainly through a **ligand** (a signaling molecule a
+cell releases or shows on its surface) binding a **receptor** on another cell.
+CellChatDB is a hand-curated list of known ligand-receptor pairs, including receptors
+made of several subunits and cofactors. Its categories are Secreted Signaling (growth
+factors, cytokines, neuropeptides), ECM-Receptor, Cell-Cell Contact and Non-protein
+Signaling. Using only one category makes the run much shorter for class. For your own
+research, you can use the whole database.
+:::
+
+```{r cc-define-db, fig.width=7, fig.height=3}
+CellChatDB <- CellChatDB.mouse
+showDatabaseCategory(CellChatDB)
+
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling", key = "annotation")
+
+cellchat@DB <- CellChatDB.use
+```
+
+## Preprocess the expression data
+
+`future::plan("multisession", workers = 4)` runs this step across up to four R
+processes.
+
+::: {.explain}
+**What this chunk does.** Keeps only the signaling genes in the database (`subsetData`), finds genes that are
+over-expressed in each group compared with the others, and then finds ligand-receptor
+pairs that involve those genes. `future::plan("multisession", workers = 4)` spreads
+the work over 4 CPU cores.
+
+**Why.** This removes pairs that can't be informative before the expensive step.
+`variable.both = FALSE` means it's enough for *either* the ligand *or* the receptor
+to be over-expressed. If you have fewer than 4 cores, lower `workers`.
+:::
+
+```{r cc-preprocess}
+cellchat <- subsetData(cellchat)
+
+future::plan("multisession", workers = 4)
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat, variable.both = FALSE)
+```
+
+## Infer communication between clusters
+
+Both the interaction range and the contact range are set to 100 µm, about one
+spot-to-spot distance. `nboot = 10` permutations keeps the run short for the class.
+
+**Caution:** this step can take several minutes.
+
+::: {.explain}
+**What this chunk does.** `computeCommunProb()` calculates, for every pair of groups (sender → receiver) and
+every ligand-receptor pair, a **communication probability** and a p-value.
+`filterCommunication()` then drops groups with fewer than 10 spots. Finally,
+processing goes back to a single core.
+
+**Why.** How it works: a group's average ligand expression times the receiving group's
+average receptor expression gives a probability (based on the law of mass action),
+adjusted for cofactors. A p-value comes from shuffling the group labels (`nboot`
+times) and seeing how often chance gives a probability that high. What the key
+arguments do:
+
+- `type = "triMean"`: uses a robust average (Tukey's trimean). It needs a gene to be expressed in a decent fraction of a group's spots, so it reports fewer but more reliable interactions.
+- `distance.use = TRUE`, `interaction.range = 100`, `scale.distance = 0.01`: penalize groups that are far apart, and ignore secreted signals beyond 100 µm. The class slides mention 150 µm in one place, but the code uses 100 µm.
+- `contact.dependent = TRUE`, `contact.range = 100`: contact-type signals only count between spots that touch, which on Visium means about one spot spacing.
+- `nboot = 10`: only 10 shuffles, so it runs fast for class. With 10 shuffles the smallest p-value possible is 0 and the next is 0.1, so "p < 0.05" here really means "never beaten by chance in 10 tries". For real research use the default of 100.
+
+**What to look for.** It can take several minutes; on the instructor's laptop it took about 12.
+:::
+
+```{r cc-infer-communication}
+cellchat <- computeCommunProb(
+  cellchat, type = "triMean", distance.use = TRUE,
+  interaction.range = 100, scale.distance = 0.01,
+  contact.range = 100, contact.dependent = TRUE,
+  contact.knn.k = 6, nboot = 10
+)
+
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+# Return to sequential processing
+future::plan("sequential")
+```
+
+Keep the interactions with p < 0.05. The source and target groups are converted to
+character so that the joins with the spot tables work.
+
+::: {.explain}
+**What this chunk does.** Turns the results into a data frame of significant interactions (p < 0.05) and
+converts the source/target group columns from factor to text.
+
+**Why.** Each row is one significant interaction: **source** group, **target** group,
+ligand, receptor, probability (`prob`), p-value, and the **pathway** it belongs to
+(for example `SPP1`, `PTN`, `NRXN`). Converting factors to text avoids errors when
+joining with other tables in the next steps.
+:::
+
+```{r cc-extract-communications}
+df.net <- subsetCommunication(cellchat, thresh = 0.05)
+
+df.net <- df.net %>%
+  mutate(source = as.character(source), target = as.character(target))
+
+head(df.net)
+```
+
+## Project the communications onto spot pairs
+
+::: {.explain}
+**What this chunk does.** Converts the spot coordinates to µm, calculates the distance between every pair of
+spots, keeps pairs within 100 µm (direct neighbors), and adds each spot's cluster.
+
+**Why.** CellChat's results are about **groups**, not individual spots. To *see*
+communication on the tissue, we need actual pairs of spots that are close enough to
+interact. `diag(...) <- Inf` stops a spot from being paired with itself.
+
+**What to look for.** Each row is a pair of neighboring spots, with the cluster of each. Every pair
+appears in both directions (A→B and B→A).
+:::
+
+```{r cc-neighboring-spots}
+interaction.range <- 100
+
+coords_um <- spatial.locs * spatial.factors[image_name, "ratio"]
+distance_matrix <- as.matrix(dist(coords_um))
+diag(distance_matrix) <- Inf
+
+indices <- which(distance_matrix <= interaction.range, arr.ind = TRUE)
+
+spot.pairs <- tibble(
+  source_spot = rownames(distance_matrix)[indices[, 1]],
+  target_spot = colnames(distance_matrix)[indices[, 2]],
+  distance_um = distance_matrix[indices],
+  sample = image_name
+)
+
+spot.groups <- tibble(spot = rownames(cellchat@meta),
+  group = as.character(cellchat@idents))
+
+spot.pairs <- spot.pairs %>%
+  left_join(spot.groups, by = c("source_spot" = "spot")) %>%
+  rename(source = group) %>%
+  left_join(spot.groups, by = c("target_spot" = "spot")) %>%
+  rename(target = group)
+
+head(spot.pairs)
+```
+
+::: {.explain}
+**What this chunk does.** Joins the spot pairs to the CellChat results by (source cluster, target cluster), so
+each pair of neighbors gets every significant interaction between its two clusters.
+The table is sorted and saved.
+
+**Why.** This is the **projection** step described in the box at the top of Part 3B. Spot A
+(cluster 2) next to spot B (cluster 5) receives all the cluster 2 → cluster 5
+interactions. It's a way to visualize the results, not new evidence. Two neighbors
+from the same cluster pair always get identical interactions.
+:::
+
+```{r cc-combine-and-save}
+spot.to.spot.communication <- spot.pairs %>%
+  inner_join(df.net, by = c("source", "target")) %>%
+  arrange(sample, source_spot, target_spot, pathway_name, interaction_name)
+
+head(spot.to.spot.communication)
+
+saveRDS(
+  spot.to.spot.communication,
+  file = file.path(results_dir, "spot-spot_commu_anterior.rds")
+)
+```
+
+## Build the spatial network in RGraphSpace
+
+::: {.explain}
+**What this chunk does.** Builds a GraphSpace for the anterior section from the low-resolution coordinates plus
+all the metadata, attaches the normalized expression and the image, and normalizes it.
+
+**Why.** It's the same idea as Part 2B. This time the metadata is included as well, so the
+spots can be colored by cluster and edges can be added between spots.
+:::
+
+```{r cc-build-graphspace}
+plot_spots <- anterior_spots
+
+gs_coords <- GetTissueCoordinates(brain, image = image_name, scale = "lowres")
+gs_coords <- gs_coords[plot_spots, c("x", "y"), drop = FALSE]
+
+gs_metadata <- brain[[]][plot_spots, , drop = FALSE]
+gs <- GraphSpace(cbind(gs_coords, gs_metadata))
+
+gs_fdata(gs) <- LayerData(brain, assay = "SCT", layer = "data")[, plot_spots, drop = FALSE]
+
+gs_image(gs) <- GetImage(brain[[image_name]], mode = "raster")
+
+gs <- normalizeGraphSpace(gs)
+```
+
+::: {.explain}
+**What this chunk does.** Defines a plot theme for reuse (`spatial_theme`), creates one color per cluster with
+`DiscretePalette`, and plots the clusters on the tissue.
+
+**Why.** It's a reference map, so that when interactions are shown later you know which
+clusters are involved.
+:::
+
+```{r cc-plot-clusters-graphspace}
+spatial_theme <- theme_gspace_coords(
+  theme = "th3", is_norm = TRUE,
+  xlab = "Spatial coordinate 1", ylab = "Spatial coordinate 2"
+)
+
+cpal1 <- DiscretePalette(nlevels(gs$seurat_clusters), "polychrome")
+
+ggplot(gs) +
+  annotation_gspace_image(gs) +
+  geom_nodespace(mapping = aes(colour = seurat_clusters), size = 1, pch = 19) +
+  scale_colour_manual(values = cpal1) +
+  theme_gspace_legend(discrete_colour = TRUE) +
+  spatial_theme
+```
+
+### Add the proximity edges
+
+This function links each spot to its six nearest neighbors, following the
+hexagonal Visium layout. Spots on the edge of the tissue can have fewer neighbors.
+
+::: {.explain}
+**What this chunk does.** Defines `proximityNetwork()`, which connects every spot to its direct neighbors with
+an edge. Step by step:
+
+1. `RANN::nn2(..., k = 7)` finds each spot's 7 nearest points: the spot itself plus 6 others.
+2. It calculates the typical neighbor distance from the closest neighbors (a harmonic mean).
+3. It keeps a neighbor only if its distance is within ±5% of that typical distance. That removes "neighbors" at tissue edges that are actually farther away.
+4. It turns the result into a list of unique, undirected edges (from–to) and adds them to the graph.
+
+**Why.** Visium spots sit on a **hexagonal grid**, so each spot inside the tissue has exactly
+6 neighbors at the same distance. Spots on the tissue edge have fewer. Adding these
+edges turns the scattered spots into a real network, which is needed to draw
+communication between neighbors.
+:::
+
+```{r cc-define-proximity-network}
+proximityNetwork <- function(gs, nnei = 6) {
+  nodes <- gs@nodes
+
+  neighbors <- RANN::nn2(nodes[, c("x", "y")], nodes[, c("x", "y")], k = nnei + 1)
+
+  dists <- as.data.frame(neighbors$nn.dists[, 2:(nnei + 1)])
+  indices <- as.data.frame(neighbors$nn.idx[, 2:(nnei + 1)])
+
+  typical_distance <- 1 / mean(1 / dists$V1)
+  keep <- dists
+  keep[, 1] <- TRUE
+  keep[, 2:ncol(keep)] <-
+    dists[, 2:ncol(dists)] >= 0.95 * typical_distance &
+    dists[, 2:ncol(dists)] <= 1.05 * typical_distance
+
+  edge_matrix <- keep * indices
+  edge_matrix$from <- row.names(edge_matrix)
+
+  edges <- edge_matrix %>%
+    pivot_longer(cols = -from, names_to = "neighbor", values_to = "to") %>%
+    filter(to != 0) %>%
+    transmute(from = as.numeric(from), to = as.numeric(to),
+      v1 = pmin(from, to), v2 = pmax(from, to)) %>%
+    distinct(v1, v2) %>%
+    transmute(from = nodes$name[v1], to = nodes$name[v2])
+
+  gs_add_edges(gs) <- edges
+  gs
+}
+```
+
+The first plot zooms in on the center with no edges yet. The second plot shows
+the same area after `proximityNetwork()` has added the edges.
+
+::: {.explain}
+**What this chunk does.** Zooms into the center of the tissue (coordinates 0.4–0.6) and draws the spots
+large. There are no edges yet.
+
+**Why.** It's the "before" picture for the next chunk.
+:::
+
+```{r cc-plot-without-edges}
+ggplot(gs) +
+  annotation_gspace_image(gs) +
+  geom_edgespace() +
+  geom_nodespace(mapping = aes(colour = seurat_clusters), size = 3, pch = 19) +
+  scale_colour_manual(values = cpal1) +
+  theme_gspace_legend(discrete_colour = TRUE) +
+  spatial_theme +
+  coord_cartesian(xlim = c(0.4, 0.6), ylim = c(0.4, 0.6))
+```
+
+::: {.explain}
+**What this chunk does.** Runs `proximityNetwork()` and redraws the same zoomed-in area.
+
+**Why.** You should now see the hexagonal pattern: each interior spot connected to 6
+neighbors. These edges are the only paths along which communication will be drawn.
+:::
+
+```{r cc-add-and-plot-edges}
+gs <- proximityNetwork(gs)
+
+ggplot(gs) +
+  annotation_gspace_image(gs) +
+  geom_edgespace() +
+  geom_nodespace(mapping = aes(colour = seurat_clusters), size = 3, pch = 19) +
+  scale_colour_manual(values = cpal1) +
+  theme_gspace_legend(discrete_colour = TRUE) +
+  spatial_theme +
+  coord_cartesian(xlim = c(0.4, 0.6), ylim = c(0.4, 0.6))
+```
+
+## Match communications to the proximity edges
+
+The graph edges have no direction, but a ligand-receptor interaction goes from a
+source to a target. So we create both directions of each edge before joining.
+
+::: {.explain}
+**What this chunk does.** Takes the graph's undirected edges, makes both directions of each edge (A→B and
+B→A), and joins them to the spot-to-spot communication table. Then it lists the
+ligand-receptor pairs that occur on at least one edge.
+
+**Why.** Communication has a direction: the sender has the ligand and the receiver has the
+receptor. An edge on its own has no direction, so both versions are needed.
+`available_interactions` is the list of interactions you can choose to visualize.
+:::
+
+```{r cc-associate-edges}
+edges <- gs@edges %>% select(name1, name2)
+
+directed_edges <- bind_rows(
+  edges,
+  edges %>% transmute(name1 = name2, name2 = name1)
+) %>%
+  distinct()
+
+spotCom_dt <- directed_edges %>%
+  inner_join(
+    spot.to.spot.communication %>% filter(sample == image_name),
+    by = c("name1" = "source_spot", "name2" = "target_spot")
+  )
+
+spotCom_dt$arrowType <- 1
+
+available_interactions <- spotCom_dt %>%
+  select(ligand, receptor, interaction_name) %>%
+  filter(!is.na(ligand), !is.na(receptor)) %>%
+  distinct()
+
+head(available_interactions)
+```
+
+## Project one interaction with PathwaySpace
+
+The function below does four things:
+
+1. It keeps only the spots involved in one ligand-receptor pair.
+2. It builds a `PathwaySpace` from them.
+3. It adds up the ligand and receptor expression for each spot.
+4. It projects that signal onto the tissue.
+
+Names joined by underscores (`_`) are treated as multi-gene complexes.
+
+::: {.explain}
+**What this chunk does.** Defines `communication_pathwayspace()`. For one ligand-receptor pair it:
+
+1. keeps only the spots on edges that carry that interaction;
+2. builds a PathwaySpace from them and maps the tissue outline;
+3. finds the ligand and receptor genes in the expression data (names joined with `_`, such as `Tgfbr1_Tgfbr2`, are split into their subunit genes);
+4. uses **ligand + receptor expression** in each spot as that spot's signal;
+5. projects the signal into a smooth map, exactly as in Part 2B.
+
+**Why.** It turns an abstract table row ("cluster 2 → cluster 5 via ligand X / receptor Y")
+into a map showing where on the tissue that conversation is most active. Adding
+ligand and receptor together is a simple stand-in for the activity of that
+interaction at each location.
+:::
+
+```{r cc-define-pathwayspace-function}
+communication_pathwayspace <- function(gs, lig, recep, spotCom_dt) {
+  communications <- spotCom_dt %>% filter(ligand == lig, receptor == recep)
+
+  selected_spots <- unique(c(communications$name1, communications$name2))
+
+  gs_selected <- gs_subset_nodes(gs, selected_spots)
+  pspace_obj <- buildPathwaySpace(gs_selected)
+
+  spot_distances <- getNearestNode(pspace_obj)
+  pdist <- mean(spot_distances$dist)
+
+  pspace_obj <- silhouetteMapping(pspace_obj, baseline = 0.1)
+
+  resolve_features <- function(label, available_features) {
+    if (label %in% available_features) {
+      return(label)
+    }
+
+    components <- strsplit(label, "_", fixed = TRUE)[[1]]
+    available_features[match(tolower(components), tolower(available_features))]
+  }
+
+  available_features <- colnames(pspace_obj@fdata)
+  ligand_features <- resolve_features(lig, available_features)
+  receptor_features <- resolve_features(recep, available_features)
+
+  if (anyNA(c(ligand_features, receptor_features))) {
+    stop("The ligand or receptor was not found in the expression data.")
+  }
+
+  ligand_signal <- rowSums(as.matrix(pspace_obj@fdata[, ligand_features, drop = FALSE]))
+  receptor_signal <- rowSums(as.matrix(pspace_obj@fdata[, receptor_features, drop = FALSE]))
+
+  vertexSignal(pspace_obj) <- ligand_signal + receptor_signal
+
+  pspace_obj <- circularProjection(
+    pspace_obj, decay.fun = weibullDecay(decay = 0.5, pdist = pdist),
+    aggregate.fun = signalAggregation("wmean"),
+    k = gs_vcount(pspace_obj))
+
+  pspace_obj
+}
+```
+
+This example uses the first available interaction. To look at a specific pair,
+change `example_ligand` and `example_receptor`.
+
+::: {.explain}
+**What this chunk does.** Picks the first available interaction, runs the function, and plots the projected
+signal over the tissue.
+
+**Why.** It's a worked example. To explore something specific, change `example_ligand` and
+`example_receptor` to any pair listed in `available_interactions`.
+:::
+
+```{r cc-plot-example-interaction}
+if (nrow(available_interactions) == 0) {
+  stop("No interaction was matched to the edges of the anterior region.")
+}
+
+example_ligand <- available_interactions$ligand[1]
+example_receptor <- available_interactions$receptor[1]
+
+pspace_obj <- communication_pathwayspace(
+  gs = gs, lig = example_ligand, recep = example_receptor, spotCom_dt = spotCom_dt)
+
+example_plot <- ggplot(pspace_obj) +
+  annotation_gspace_image(pspace_obj) +
+  annotation_pspace_signal(pspace_obj, si.alpha = 0.25) +
+  spatial_theme + labs(title = paste(example_ligand, "-", example_receptor))
+
+example_plot
+```
+
+## Save figures for several interactions
+
+This saves the first three interactions. To save all of them, set
+`n_interactions <- nrow(available_interactions)`.
+
+::: {.explain}
+**What this chunk does.** Loops over the first three interactions, makes a map for each and saves it as a
+PNG. Characters that aren't allowed in file names are replaced with `_`, and memory
+is freed after each map.
+
+**Why.** A loop does the same steps for many items without copying code. `gsub()` cleans the
+file name, because ligand and receptor names can contain characters that aren't valid
+in file names.
+:::
+
+```{r cc-save-interaction-figures}
+n_interactions <- min(3, nrow(available_interactions))
+
+for (i in seq_len(n_interactions)) {
+  ligand <- available_interactions$ligand[i]
+  receptor <- available_interactions$receptor[i]
+
+  pspace_i <- communication_pathwayspace(
+    gs = gs, lig = ligand, recep = receptor, spotCom_dt = spotCom_dt)
+
+  plot_i <- ggplot(pspace_i) +
+    annotation_gspace_image(pspace_i) +
+    annotation_pspace_signal(pspace_i, si.alpha = 0.25) +
+    spatial_theme + labs(title = paste(ligand, "-", receptor))
+
+  file_name <- paste0("CellChat_PathwaySpace_", image_name, "_", ligand, "-", receptor, ".png")
+  file_name <- gsub("[^[:alnum:]_.-]", "_", file_name)
+
+  ggsave(filename = file.path(images_dir, file_name),
+    plot = plot_i, width = 9, height = 6, units = "in", dpi = 120, bg = "white")
+
+  rm(pspace_i, plot_i)
+  gc()
+}
+```
+
+## Course challenge
+
+**Repeat this communication analysis using the RCTD cell types instead of the
+clusters.** Load `results/stxbrain_Seurat_with_RCTD.rds` from Part 3A, then build
+`meta$labels` from the `first_type` column instead of `seurat_clusters`. You may
+want to exclude `reject` spots first. If you skipped Part 3A, the course
+repository provides a ready-made copy:
+[stxbrain_Seurat_com_RCTD.rds](https://github.com/flaviogckessler/Curso_ST/blob/main/resultados/stxbrain_Seurat_com_RCTD.rds).
+Keep in mind that this object holds **raw** counts. Normalize it (for example with
+`SCTransform()`) before you build `data.input`.
+
+::: {.explain}
+**What this chunk does.** Deletes every object except the folder paths, then runs `gc()` to give memory back.
+
+**Why.** R keeps every object in RAM. The next parts load large objects, and RCTD alone needs
+~20 GB, so starting each part with a clean workspace prevents out-of-memory crashes.
+Nothing is lost, because the results are already saved on disk.
+:::
+
+```{r cc-cleanup}
+rm(list = setdiff(ls(), c("project_dir", "data_dir", "images_dir", "results_dir",
+                          "run_analysis", "params")))
+invisible(gc())
+```
+
+# Part 3C (Class 3): Cell segmentation (Xenium) with RGraphSpace
+
+::: {.bigpicture}
+**Big picture: from spots to real cells.** **Image-based** platforms (10x Xenium,
+CosMx, MERSCOPE) detect individual RNA molecules directly in the tissue for a set
+panel of genes (hundreds to a few thousand), with sub-cellular precision. To get a
+count per *cell*, software has to draw each cell's boundary, usually starting from
+nuclei stained with DAPI and growing outward or using membrane stains. That step is
+**cell segmentation**. The result is a cell × gene count matrix plus a polygon for
+every cell. Visium HD has the same problem with its tiny 2 µm bins. This part
+doesn't run segmentation; it shows how to *use* the cell outlines with
+RGraphSpace and `sf`.
+:::
+
+
+In this part we explore cell boundaries in a Xenium dataset. Each cell is shown in
+two ways: as a point at its center, and as its segmentation polygon. We color both
+by `Slc17a7` expression. This part is adapted from the Sysbiolab vignette
+[Spatial segmentation with RGraphSpace](https://sysbiolab.github.io/RGraphSpace/articles/spatial-segmentation1.html).
+
+> **Important:** no new segmentation is computed here. The cell boundaries were
+> already estimated by the Xenium pipeline. We load them, inspect them, and use
+> them as spatial geometries in the `GraphSpace`.
+
+The raw Xenium download is larger than 3 GB. So we download a small, pre-cropped
+`GraphSpace` object that the course provides. The appendix shows how that object
+was built from the raw data.
+
+## Load the packages
+
+::: {.explain}
+**What this chunk does.** Checks and loads RGraphSpace, Seurat, sf, ggplot2 and patchwork.
+
+**Why.** `sf` ("simple features") is R's standard package for geometric data: points, lines
+and polygons. Here, each cell's outline is a polygon.
+:::
+
+```{r seg-check-load-packages, message=FALSE}
+segmentation_packages <- c("RGraphSpace", "Seurat", "SeuratObject", "sf", "ggplot2", "patchwork")
+
+missing_packages <- segmentation_packages[
+  !vapply(segmentation_packages, requireNamespace, logical(1), quietly = TRUE)]
+
+if (length(missing_packages) > 0) {
+  stop("Run Part 1 first. Missing packages: ", paste(missing_packages, collapse = ", "))}
+
+library("RGraphSpace")
+library("Seurat")
+library("SeuratObject")
+library("sf")
+library("ggplot2")
+library("patchwork")
+```
+
+## Download and load the prepared object
+
+The file is downloaded only if it is not already in `data/`.
+
+::: {.explain}
+**What this chunk does.** Downloads `Xenium_GS_Crop.RDS` from the course repository (only once), reads it, and
+checks that it is a GraphSpace.
+
+**Why.** The raw Xenium data is more than 3 GB. The course gives you a small, pre-processed
+crop so the class runs quickly. The appendix shows how the crop was made.
+:::
+
+```{r seg-download-object}
+data_url <- paste0(
+  "https://raw.githubusercontent.com/flaviogckessler/Curso_ST/",
+  "main/data/Xenium_GS_Crop.RDS")
+
+data_file <- file.path(data_dir, "Xenium_GS_Crop.RDS")
+
+if (!file.exists(data_file)) {
+  utils::download.file(data_url, data_file, mode = "wb")}
+
+gs_crop <- readRDS(data_file)
+
+if (!inherits(gs_crop, "GraphSpace")) {
+  stop("The downloaded file does not contain a GraphSpace object.")}
+
+gs_crop
+```
+
+## Inspect the cell geometries
+
+The polygons are stored as an `sf` geometry collection, with one entry per cell,
+aligned with the vertices of the `GraphSpace`.
+
+::: {.explain}
+**What this chunk does.** Prints the stored cell polygons, counts them, and tallies their geometry types.
+
+**Why.** Each polygon is a list of corner points tracing one cell's boundary, and its
+position in the list matches one node (cell) in the graph. They should all be
+`POLYGON` (or `MULTIPOLYGON` for cells split into pieces).
+:::
+
+```{r seg-access-geometries}
+gs_crop@nodes$geometry
+
+cell_geometries <- gs_crop@nodes$geometry
+
+length(cell_geometries)
+sf::st_geometry_type(cell_geometries) |> table()
+```
+
+### Individual cells
+
+::: {.explain}
+**What this chunk does.** Plots the outlines of the first three cells one at a time.
+
+**Why.** It shows what segmentation produces: a real cell shape with its own area, not a
+55 µm circle.
+:::
+
+```{r seg-individual-cells, fig.show='hold', out.width='32%', fig.width=4, fig.height=4}
+plot(gs_crop@nodes$geometry[1])
+plot(gs_crop@nodes$geometry[2])
+plot(gs_crop@nodes$geometry[3])
+```
+
+### The first twenty cells together
+
+`st_combine()` collects the polygons into one geometry without merging their
+boundaries, so each cell outline is still visible.
+
+::: {.explain}
+**What this chunk does.** Puts the first 20 polygons in one plot with `st_combine()`.
+
+**Why.** `st_combine()` collects the shapes together without merging their borders, so you
+can see neighboring cells packed against each other the way they are in tissue.
+:::
+
+```{r seg-combine-geometries, fig.width=6, fig.height=6}
+plot(st_combine(gs_crop@nodes$geometry[1:20]))
+```
+
+## Compare cell centers and polygons
+
+Both panels use `log2(x + 1)`, the same color palette, and the same scale limits,
+so they can be compared directly.
+
+::: {.explain}
+**What this chunk does.** Sets one color palette and one color-scale range (based on `log2(count + 1)`) to be
+used by both of the next plots.
+
+**Why.** Xenium values here are raw counts, which are very skewed, so `log2(x + 1)` compresses
+them; the +1 avoids taking the log of 0. Using the same palette and limits in both
+plots means the same color means the same expression in each, so they can be
+compared fairly.
+:::
+
+```{r seg-define-scale}
+cpal <- hcl.colors(100, palette = "Geyser", rev = FALSE)
+data_range <- range(log2(gs_crop[["fdata"]] + 1))
+```
+
+::: {.explain}
+**What this chunk does.** Draws each cell as a dot at its center, colored by **Slc17a7** expression.
+
+**Why.** *Slc17a7* codes for VGLUT1, a marker of excitatory (glutamatergic) neurons in the
+cortex and hippocampus. Dots are quick to draw and show the overall pattern, but they
+leave out each cell's shape and size.
+:::
+
+```{r seg-plot-vertices, fig.width=7, fig.height=6}
+p1 <- ggplot(gs_crop) +
+  geom_nodespace(mapping = aes(colour = log2(Slc17a7 + 1)), size = 1.5, pch = 19) +
+  scale_colour_continuous(palette = cpal, limits = data_range) +
+  theme_gspace_coords(theme = "th3", is_norm = TRUE,
+    xlab = "Tissue coordinate 1", ylab = "Tissue coordinate 2")
+
+p1
+```
+
+In this panel each polygon is filled by expression, and the cell centers are
+overlaid as small black points.
+
+::: {.explain}
+**What this chunk does.** Fills each cell's polygon with its Slc17a7 color (`geom_sf`) and adds the cell
+centers as small black dots.
+
+**Why.** This is single-cell-resolution spatial data: you see which *individual cells*
+express the gene, and how big they are. The dots show that each polygon is the same
+cell as the dot in the previous plot.
+:::
+
+```{r seg-plot-polygons, fig.width=7, fig.height=6}
+p2 <- ggplot(gs_crop) +
+  geom_sf(mapping = aes(geometry = geometry, fill = log2(Slc17a7 + 1))) +
+  scale_fill_continuous(palette = cpal, limits = data_range) +
+  geom_nodespace(colour = "black", size = 0.2, pch = 19) +
+  theme_gspace_coords(theme = "th3", is_norm = TRUE,
+    xlab = "Tissue coordinate 1", ylab = "Tissue coordinate 2")
+
+p2
+```
+
+::: {.explain}
+**What this chunk does.** Places the two plots side by side with a title and saves the figure.
+
+**Why.** Same cells, same values, shown two ways: as points and as cell outlines. It's the
+take-home message of the segmentation class.
+:::
+
+```{r seg-compare-representations, fig.width=12, fig.height=6}
+p <- p1 + p2 +
+  patchwork::plot_annotation(
+    title = "RGraphSpace integration with sf geometries",
+    theme = theme(plot.title = element_text(hjust = 0.5)))
+p
+
+ggsave(filename = file.path(images_dir, "SegCell_GS_Slc17a7.png"),
+  plot = p, width = 9, height = 6, units = "in", dpi = 120, bg = "white")
+```
+
+The points summarize each cell as a single position, and the polygons also show
+its outline. `GraphSpace` keeps the expression, positions and geometries aligned,
+so the same attributes can be mapped directly in `ggplot2`.
+
+# Appendix (optional, advanced): Rebuild the Xenium crop from the raw data
+
+This appendix is **off by default** (`eval = FALSE`), so it does not run when you
+knit the file. To run it, run the chunks by hand or change `eval = FALSE` to
+`eval = TRUE`. It downloads the public 10x Genomics Xenium mouse brain dataset
+(**> 3 GB**; keep about 7 GB of free disk space). Then it loads the data with
+Seurat, converts it to `GraphSpace`, attaches the cell polygons, orients and crops
+the region, and saves `data/Xenium_GS_Crop.RDS`. `LoadXenium()` needs the
+`hdf5r` package to read `.h5` files. Install it with `install.packages("hdf5r")`
+if it is missing.
+
+The download function reuses an existing extraction or ZIP file if one is found. It
+downloads into a temporary `.part` file and renames it only after the download
+finishes.
+
+::: {.explain}
+**What this chunk does.** Defines a function that reuses an existing extracted dataset or ZIP file, and
+otherwise downloads the 10x Xenium ZIP file (more than 3 GB) to a temporary `.part` file,
+renames it once the download is complete, and unzips it.
+
+**Why.** Downloading to `.part` first means a broken download is never mistaken for a
+finished file. Checking for existing files avoids downloading 3 GB twice.
+:::
+
+```{r xen-define-download, eval=FALSE}
+prepare_xenium_data <- function(dest_dir = file.path(data_dir, "xenium_tiny_subset")) {
+  url <- paste0(
+    "https://cf.10xgenomics.com/samples/xenium/1.0.2/",
+    "Xenium_V1_FF_Mouse_Brain_Coronal_Subset_CTX_HP/",
+    "Xenium_V1_FF_Mouse_Brain_Coronal_Subset_CTX_HP_outs.zip"
+  )
+
+  dir.create(dest_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Find an existing extraction, including one nested inside an extra
+  # folder contained in the ZIP file
+  locate_dataset <- function() {
+    matrix_file <- list.files(
+      dest_dir, pattern = "^cell_feature_matrix\\.h5$",
+      recursive = TRUE, full.names = TRUE
+    )
+
+    if (length(matrix_file) > 0L) dirname(matrix_file[[1L]]) else NA_character_
+  }
+
+  data_path <- locate_dataset()
+
+  if (!is.na(data_path)) {
+    message("The Xenium dataset is already available; download skipped.")
+    return(normalizePath(data_path, winslash = "/", mustWork = TRUE))
+  }
+
+  zip_file <- file.path(dirname(dest_dir), basename(url))
+
+  if (!file.exists(zip_file)) {
+    old_timeout <- getOption("timeout")
+    on.exit(options(timeout = old_timeout), add = TRUE)
+    options(timeout = max(3600, old_timeout))
+
+    partial_file <- paste0(zip_file, ".part")
+
+    status <- utils::download.file(url, destfile = partial_file, mode = "wb", quiet = FALSE)
+
+    if (status != 0L) {
+      stop("Could not download the Xenium dataset.")
+    }
+
+    if (!file.rename(partial_file, zip_file)) {
+      stop("Could not move the downloaded file to its final location.")
+    }
+  } else {
+    message("The ZIP file is already available; download skipped.")
+  }
+
+  utils::unzip(zip_file, exdir = dest_dir)
+
+  data_path <- locate_dataset()
+
+  if (is.na(data_path)) {
+    stop("Extraction finished, but the expected Xenium files were not found.")
+  }
+
+  normalizePath(data_path, winslash = "/", mustWork = TRUE)
+}
+```
+
+::: {.explain}
+**What this chunk does.** Loads the packages and runs the download function.
+
+**Why.** It returns the folder that contains `cell_feature_matrix.h5`, which is where
+`LoadXenium()` reads from.
+:::
+
+```{r xen-get-data, eval=FALSE}
+library("RGraphSpace")
+library("Seurat")
+library("SeuratObject")
+library("sf")
+library("patchwork")
+
+xenium_path <- prepare_xenium_data(dest_dir = file.path(data_dir, "xenium_tiny_subset"))
+xenium_path
+```
+
+Load the Xenium data with its cell segmentations, then move the raw `counts` layer
+into a `GraphSpace`.
+
+::: {.explain}
+**What this chunk does.** Reads the Xenium output (counts and cell segmentations) into Seurat, then converts it to a
+GraphSpace using the raw counts.
+
+**Why.** `LoadXenium()` reads 10x's output folder. It needs the `hdf5r` package for `.h5` files.
+:::
+
+```{r xen-load-convert, eval=FALSE}
+xenium.obj <- LoadXenium(xenium_path, fov = "fov", segmentations = "cell")
+
+gs <- as.GraphSpace(xenium.obj, space = "spatial", layer = "counts")
+```
+
+Convert the segmentation polygons to valid `sf` geometries and attach them to the
+vertices.
+
+::: {.explain}
+**What this chunk does.** Takes the cell polygons out of the Seurat object, converts them to `sf`, fixes any
+invalid shapes (`st_make_valid`), and attaches them to the graph.
+
+**Why.** Segmentation outlines sometimes cross over themselves. Invalid polygons make
+plotting and area calculations fail, so they are repaired first.
+:::
+
+```{r xen-attach-geometries, eval=FALSE}
+Images(xenium.obj)
+
+cellseg <- xenium.obj[["fov"]]
+cellseg <- cellseg$segmentations@polygons
+cellseg <- SpatialPolygons(cellseg)
+cellseg <- sf::st_as_sfc(cellseg)
+cellseg <- sf::st_make_valid(cellseg)
+
+gs_geometry(gs) <- cellseg
+```
+
+Normalize the graph and the geometries to the same coordinate system, then rotate
+and flip them to match the reference orientation.
+
+::: {.explain}
+**What this chunk does.** Normalizes the node coordinates and the polygons to the same 0–1 coordinate system,
+then rotates and flips the graph.
+
+**Why.** The nodes and the polygons have to share one coordinate system, or the outlines
+would sit away from their cells. Rotating and flipping puts the brain the right way up.
+:::
+
+```{r xen-normalize-orient, eval=FALSE}
+gs <- normalizeGraphSpace(gs, mar = 0)
+gs <- normalizeGeometry(gs)
+
+gs <- rotateGraphSpace(gs)
+gs <- flipGraphSpace(gs)
+```
+
+The white dashed rectangle marks the region that will be kept.
+
+::: {.explain}
+**What this chunk does.** Plots every cell colored by Slc17a7 and draws a dashed box around the area that
+will be kept.
+
+**Why.** It lets you check the crop region visually before cutting it out.
+:::
+
+```{r xen-region-of-interest, eval=FALSE, fig.width=8, fig.height=6}
+cpal <- hcl.colors(100, palette = "Geyser", rev = FALSE)
+data_range <- range(log2(gs[["fdata"]] + 1))
+
+ggplot(gs) +
+  geom_nodespace(mapping = aes(colour = log2(Slc17a7 + 1)), size = 0.4, pch = 16) +
+  scale_colour_continuous(palette = cpal, limits = data_range) +
+  theme_gspace_coords(theme = "th3", is_norm = TRUE,
+    xlab = "Tissue coordinates 1", ylab = "Tissue coordinates 2") +
+  annotate("rect", xmin = 0.55, xmax = 0.75, ymin = 0.45, ymax = 0.65,
+    fill = NA, colour = "white", lty = "21", lwd = 1)
+```
+
+Crop the region, then normalize and orient it again, because its coordinates have
+changed. Then save it.
+
+::: {.explain}
+**What this chunk does.** Cuts out the boxed region, normalizes and orients it again, saves it, and shows the
+file size.
+
+**Why.** Cropping changes the coordinate range, so normalization has to be redone. The small
+saved file is what Part 3C downloads.
+:::
+
+```{r xen-crop-save, eval=FALSE}
+gs_crop <- cropGraphSpace(gs, xmin = 0.55, xmax = 0.75, ymin = 0.45, ymax = 0.65)
+
+gs_crop <- normalizeGraphSpace(gs_crop, mar = 0)
+gs_crop <- normalizeGeometry(gs_crop)
+
+gs_crop <- rotateGraphSpace(gs_crop)
+gs_crop <- flipGraphSpace(gs_crop)
+
+output_file <- file.path(data_dir, "Xenium_GS_Crop.RDS")
+saveRDS(gs_crop, file = output_file)
+
+file.info(output_file)[, c("size", "mtime")]
+```
+
+Only delete the ZIP file and the extracted folder after you have confirmed that
+`readRDS()` can read `Xenium_GS_Crop.RDS`.
+
+# Files produced
+
+| Part | File |
+|----|----|
+| 2A | `data/brain.RDS` and `images/Brain_SpotQC_*.png`, `Brain_clustering_*.png`, `Brain_Genes.png`, `FindMarkers.png`, `SVGs.png` |
+| 2B | `images/Brain_ant_RGraphSpace_Camk2n1.png`, `Brain_ant_PathwaySpace_Camk2n1.png`, `Brain_anterior_Camk2n1.png` |
+| 3A | `data/allen_cortex.rds`, `results/stxbrain_RCTD_doublet_results.rds`, `results/stxbrain_RCTD_doublet_spot_summary.csv`, `results/stxbrain_Seurat_with_RCTD.rds`, `images/rctd_*.png` |
+| 3B | `results/spot-spot_commu_anterior.rds`, `images/CellChat_PathwaySpace_anterior1_<ligand>-<receptor>.png` |
+| 3C | `data/Xenium_GS_Crop.RDS`, `images/SegCell_GS_Slc17a7.png` |
+
+# Session information
+
+::: {.explain}
+**What this chunk does.** Prints the R version, operating system and every loaded package with its version.
+
+**Why.** It records exactly what software produced your results. Include it whenever you
+share results or ask someone for help debugging.
+:::
+
+```{r session-info}
+sessionInfo()
+```
+
+# References
+
+- Cable, D. M. et al. (2022). Robust decomposition of cell type mixtures in spatial transcriptomics (RCTD). *Nature Biotechnology*.
+- Hao, Y. et al. (2024). Dictionary learning for integrative, multimodal and scalable single-cell analysis (Seurat v5). *Nature Biotechnology*.
+- Jin, S. et al. (2021). Inference and analysis of cell-cell communication using CellChat. *Nature Communications*.
+- Jin, S., Plikus, M. V. and Nie, Q. (2025). CellChat for systematic analysis of cell-cell communication from single-cell transcriptomics. *Nature Protocols*.
+- Tasic, B. et al. (2016). Adult mouse cortical cell taxonomy revealed by single cell transcriptomics. *Nature Neuroscience*.
+- Tercan, B. et al. (2025). Protocol for assessing distances in pathway space for classifier feature sets from machine learning methods. *STAR Protocols*.
+- Ellrott, K. et al. (2025). Classification of non-TCGA cancer samples to TCGA molecular subtypes using compact feature sets. *Cancer Cell*.
+- Sysbiolab Team (2026). RGraphSpace: a lightweight interface between 'igraph' and 'ggplot2' graphics. <https://sysbiolab.github.io/RGraphSpace/>
+- The full bibliography is in the course repository: `bibliography.bib`.
